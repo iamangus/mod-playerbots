@@ -4,9 +4,13 @@
  * or (at your option) any later version.
  */
 
-#ifndef BOOST_BIND_GLOBAL_PLACEHOLDERS
-#define BOOST_BIND_GLOBAL_PLACEHOLDERS
-#endif
+#include <boost/bind/placeholders.hpp>
+
+namespace boost::property_tree::json_parser::detail
+{
+    using boost::placeholders::_1;
+}
+
 #include "AgentRuntime.h"
 #include "AiObjectContext.h"
 #include "ChooseTravelTargetAction.h"
