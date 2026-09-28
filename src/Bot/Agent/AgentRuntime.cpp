@@ -121,7 +121,7 @@ public:
         if (eventShard >= AGENT_EVENT_SHARD_COUNT)
             return false;
         uint32 const lastHeartbeat = HeartbeatTimes()[eventShard].load(std::memory_order_acquire);
-        return lastHeartbeat && GetMSTimeDiff(lastHeartbeat, getMSTime()) < AGENT_CONTROLLER_TIMEOUT_MS;
+        return lastHeartbeat && getMSTimeDiff(lastHeartbeat, getMSTime()) < AGENT_CONTROLLER_TIMEOUT_MS;
 #else
         (void)eventShard;
         return false;
@@ -188,7 +188,7 @@ public:
         if (subscribed)
             return subscribedSubject == CommandSubject(subjectPrefix, ownerToken);
         uint32 const now = getMSTime();
-        if (lastAttempt && GetMSTimeDiff(lastAttempt, now) < 5000)
+        if (lastAttempt && getMSTimeDiff(lastAttempt, now) < 5000)
             return false;
         lastAttempt = now;
 
@@ -1305,7 +1305,7 @@ void AgentRuntime::Update(PlayerbotAI* botAI, uint32 elapsed)
     uint32 const now = getMSTime();
     if (m_impl->stopped)
         return;
-    if (!m_impl->transportReady && GetMSTimeDiff(m_impl->lastSubscribeCheckMs, now) >= 5000)
+    if (!m_impl->transportReady && getMSTimeDiff(m_impl->lastSubscribeCheckMs, now) >= 5000)
     {
         m_impl->lastSubscribeCheckMs = now;
         m_impl->transportReady = AgentBridgeTransport::EnsureSubscribed(m_impl->subjectPrefix,
@@ -1351,7 +1351,7 @@ void AgentRuntime::Update(PlayerbotAI* botAI, uint32 elapsed)
                         ",\"zone_id\":" + std::to_string(bot->GetZoneId()) + "}");
     }
 
-    if (!m_impl->lastHeartbeatMs || GetMSTimeDiff(m_impl->lastHeartbeatMs, now) >= AGENT_HEARTBEAT_MS)
+    if (!m_impl->lastHeartbeatMs || getMSTimeDiff(m_impl->lastHeartbeatMs, now) >= AGENT_HEARTBEAT_MS)
     {
         m_impl->lastHeartbeatMs = now;
         m_impl->Publish("bot_heartbeat", "", "{\"map_id\":" + std::to_string(bot->GetMapId()) +
