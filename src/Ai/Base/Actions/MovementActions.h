@@ -83,6 +83,13 @@ private:
     void DoMovePoint(Unit* unit, float x, float y, float z, bool generatePath, bool backwards);
 };
 
+class AgentMoveToTargetAction : public MovementAction
+{
+public:
+    AgentMoveToTargetAction(PlayerbotAI* botAI) : MovementAction(botAI, "agent move to target") {}
+    bool Execute(Event event) override;
+};
+
 class FleeAction : public MovementAction
 {
 public:

@@ -183,6 +183,10 @@ public:
     // chat
     bool randomBotTalk;
     bool randomBotEmote;
+    bool agentBridgeEnabled = false;
+    uint32 agentBridgeBotGuid = 0;
+    uint32 agentBridgeMaxMessageLength = 240;
+    std::string agentBridgeSubjectPrefix = "playerbots.v1";
     bool randomBotSuggestDungeons;
     bool enableBroadcasts;
     bool enableGreet;

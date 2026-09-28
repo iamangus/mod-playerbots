@@ -28,6 +28,15 @@ bool AttackAction::Execute(Event /*event*/)
     return Attack(target);
 }
 
+bool AgentAttackTargetAction::Execute(Event event)
+{
+    Unit* target = botAI->GetUnit(event.getObject());
+    if (!target || !target->IsInWorld() || !target->IsAlive() || !bot->IsValidAttackTarget(target))
+        return false;
+
+    return Attack(target);
+}
+
 bool AttackMyTargetAction::Execute(Event /*event*/)
 {
     Player* master = GetMaster();

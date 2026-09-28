@@ -17,6 +17,7 @@
 #include "RandomPlayerbotMgr.h"
 #include "Talentspec.h"
 #include "TravelMgr.h"
+#include <algorithm>
 #include <cctype>
 #include <iostream>
 #include <sstream>
@@ -296,6 +297,12 @@ bool PlayerbotAIConfig::Initialize()
     enableBroadcasts = sConfigMgr->GetOption<bool>("AiPlayerbot.EnableBroadcasts", true);
     randomBotTalk = sConfigMgr->GetOption<bool>("AiPlayerbot.RandomBotTalk", false);
     randomBotEmote = sConfigMgr->GetOption<bool>("AiPlayerbot.RandomBotEmote", false);
+    agentBridgeEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.AgentBridge.Enabled", false);
+    agentBridgeBotGuid = sConfigMgr->GetOption<uint32>("AiPlayerbot.AgentBridge.BotGuid", 0);
+    agentBridgeMaxMessageLength = std::clamp<uint32>(
+        sConfigMgr->GetOption<uint32>("AiPlayerbot.AgentBridge.MaxMessageLength", 240), 64, 500);
+    agentBridgeSubjectPrefix = sConfigMgr->GetOption<std::string>(
+        "AiPlayerbot.AgentBridge.SubjectPrefix", "playerbots.v1");
     randomBotSuggestDungeons = sConfigMgr->GetOption<bool>("AiPlayerbot.RandomBotSuggestDungeons", true);
     randomBotSayWithoutMaster = sConfigMgr->GetOption<bool>("AiPlayerbot.RandomBotSayWithoutMaster", false);
 

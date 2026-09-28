@@ -646,6 +646,7 @@ public:
     }
 
     bool isCreature();
+    uint32 GetObjectiveIndex() const { return objective; }
     uint32 ReqCreature();
     uint32 ReqGOId();
     uint32 ReqCount();

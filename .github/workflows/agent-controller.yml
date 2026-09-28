@@ -1,0 +1,64 @@
+name: agent-controller
+
+on:
+  pull_request:
+    paths:
+      - "agent-controller/**"
+      - ".github/workflows/agent-controller.yml"
+  push:
+    branches:
+      - master
+      - test-staging
+      - "external-agent-bridge"
+    paths:
+      - "agent-controller/**"
+      - ".github/workflows/agent-controller.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: agent-controller
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: agent-controller/go.mod
+          cache-dependency-path: agent-controller/go.sum
+      - run: go test -race -count=1 ./...
+      - run: go vet ./...
+
+  image:
+    needs: test
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/iamangus/playerbot-agent-controller
+          tags: |
+            type=ref,event=branch
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./agent-controller
+          file: ./agent-controller/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

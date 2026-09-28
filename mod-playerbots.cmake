@@ -8,3 +8,13 @@
 target_link_libraries(modules
   PRIVATE
     mysql)
+
+# ToCloud9 supplies libsidecar in the AzerothCore source tree. The bridge is
+# optional so the module still builds against the standalone playerbots core.
+set(PLAYERBOTS_TOCLOUD9_SIDECAR_DIR "${CMAKE_SOURCE_DIR}/deps/libsidecar")
+if(EXISTS "${PLAYERBOTS_TOCLOUD9_SIDECAR_DIR}/include/libsidecar.h" AND
+   EXISTS "${PLAYERBOTS_TOCLOUD9_SIDECAR_DIR}/libsidecar.so")
+  target_include_directories(modules PRIVATE "${PLAYERBOTS_TOCLOUD9_SIDECAR_DIR}/include")
+  target_link_libraries(modules PRIVATE "${PLAYERBOTS_TOCLOUD9_SIDECAR_DIR}/libsidecar.so")
+  target_compile_definitions(modules PRIVATE PLAYERBOTS_WITH_TOCLOUD9_SIDECAR=1)
+endif()

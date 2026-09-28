@@ -36,6 +36,16 @@
 #include "G3D/Vector3.h"
 #include <cmath>
 #include <cstdlib>
+
+bool AgentMoveToTargetAction::Execute(Event event)
+{
+    Unit* target = botAI->GetUnit(event.getObject());
+    if (!target || !target->IsInWorld() || target->IsDuringRemoveFromWorld() ||
+        target->GetMapId() != bot->GetMapId())
+        return false;
+
+    return Follow(target);
+}
 #include <iomanip>
 #include <string>
 

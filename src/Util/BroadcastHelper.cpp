@@ -6,6 +6,7 @@
 
 #include "BroadcastHelper.h"
 #include "AiFactory.h"
+#include "AgentRuntime.h"
 #include "Channel.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
@@ -68,6 +69,8 @@ bool BroadcastHelper::BroadcastTest(PlayerbotAI* ai, Player* /* bot */)
 */
 bool BroadcastHelper::BroadcastToChannelWithGlobalChance(PlayerbotAI* ai, std::string message, std::list<std::pair<ToChannel, uint32>> toChannels)
 {
+    if (ai && ai->GetAgentRuntime() && ai->GetAgentRuntime()->IsEnabled(ai))
+        return false;
     if (!sPlayerbotAIConfig.enableBroadcasts)
         return false;
     if (message.empty())
@@ -615,6 +618,8 @@ bool BroadcastHelper::BroadcastLevelup(PlayerbotAI* ai, Player* bot)
 
 bool BroadcastHelper::BroadcastGuildMemberPromotion(PlayerbotAI* ai, Player* /* bot */, Player* player)
 {
+    if (ai && ai->GetAgentRuntime() && ai->GetAgentRuntime()->IsEnabled(ai))
+        return false;
     if (!sPlayerbotAIConfig.enableBroadcasts)
         return false;
     if (urand(1, sPlayerbotAIConfig.broadcastChanceMaxValue) <= sPlayerbotAIConfig.broadcastChanceGuildManagement)
@@ -633,6 +638,8 @@ bool BroadcastHelper::BroadcastGuildMemberPromotion(PlayerbotAI* ai, Player* /* 
 
 bool BroadcastHelper::BroadcastGuildMemberDemotion(PlayerbotAI* ai, Player* /* bot */, Player* player)
 {
+    if (ai && ai->GetAgentRuntime() && ai->GetAgentRuntime()->IsEnabled(ai))
+        return false;
     if (urand(1, sPlayerbotAIConfig.broadcastChanceMaxValue) <= sPlayerbotAIConfig.broadcastChanceGuildManagement)
     {
         std::map<std::string, std::string> placeholders;
@@ -649,6 +656,8 @@ bool BroadcastHelper::BroadcastGuildMemberDemotion(PlayerbotAI* ai, Player* /* b
 
 bool BroadcastHelper::BroadcastGuildGroupOrRaidInvite(PlayerbotAI* ai, Player* /* bot */, Player* player, Group* group)
 {
+    if (ai && ai->GetAgentRuntime() && ai->GetAgentRuntime()->IsEnabled(ai))
+        return false;
     if (!sPlayerbotAIConfig.enableBroadcasts)
         return false;
     std::map<std::string, std::string> placeholders;

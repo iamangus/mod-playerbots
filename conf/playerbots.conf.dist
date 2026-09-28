@@ -2568,6 +2568,14 @@ AiPlayerbot.EnableAutoTradeOnItemMention = 1
 
 # Enable bots talking (say / yell / general chatting / lfg)
 AiPlayerbot.RandomBotTalk = 1
+# Experimental remote-agent bridge. Requires ToCloud9's libsidecar/NATS integration.
+# Disabled by default. BotGuid=0 manages all playerbots; set a character GUID counter to test one.
+AiPlayerbot.AgentBridge.Enabled = 0
+AiPlayerbot.AgentBridge.BotGuid = 0
+# NATS subject namespace shared with the external agent-controller.
+AiPlayerbot.AgentBridge.SubjectPrefix = "playerbots.v1"
+# Maximum outgoing generated chat length in UTF-8 bytes (64-500).
+AiPlayerbot.AgentBridge.MaxMessageLength = 240
 # Enable bots emoting
 AiPlayerbot.RandomBotEmote = 0
 # Enable randombots suggesting dungeons in chat

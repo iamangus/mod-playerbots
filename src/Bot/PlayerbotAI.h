@@ -23,12 +23,14 @@
 #include "SpellAuras.h"
 #include "Util.h"
 #include "WorldPacket.h"
+#include <memory>
 #include <stack>
 
 class AiObjectContext;
 class Creature;
 class Engine;
 class ExternalEventHelper;
+class AgentRuntime;
 class Group;
 class Gameobject;
 class Item;
@@ -400,6 +402,7 @@ public:
     void HandleMasterIncomingPacket(WorldPacket const& packet);
     void HandleMasterOutgoingPacket(WorldPacket const& packet);
     void HandleTeleportAck();
+    AgentRuntime* GetAgentRuntime() { return agentRuntime.get(); }
     void ChangeEngine(BotState type);
     void ChangeEngineOnCombat();
     void ChangeEngineOnNonCombat();
@@ -470,10 +473,13 @@ public:
                             PlayerbotSecurityLevel securityLevel = PLAYERBOT_SECURITY_ALLOW_ALL);
     bool TellError(std::string const text, PlayerbotSecurityLevel securityLevel = PLAYERBOT_SECURITY_ALLOW_ALL);
     bool SayToGuild(std::string const& msg);
+    bool SayToGuildOfficers(std::string const& msg);
     bool SayToWorld(std::string const& msg);
     bool SayToChannel(std::string const& msg, ChatChannelId const& chanId);
     bool SayToParty(std::string const& msg);
     bool SayToRaid(std::string const& msg);
+    bool SayToPartyFromAgent(std::string const& msg);
+    bool SayToRaidFromAgent(std::string const& msg);
     bool Yell(std::string const& msg);
     bool Say(std::string const& msg);
     bool Whisper(std::string const& msg, std::string const& receiverName);
@@ -644,6 +650,7 @@ protected:
     PacketHandlingHelper masterOutgoingPacketHandlers;
     CompositeChatFilter chatFilter;
     PlayerbotSecurity security;
+    std::unique_ptr<AgentRuntime> agentRuntime;
     std::map<std::string, time_t> whispers;
     std::pair<ChatMsg, time_t> currentChat;
     static std::set<std::string> unsecuredCommands;

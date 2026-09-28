@@ -92,7 +92,7 @@ bool TalkToQuestGiverAction::TurnInQuest(Quest const* quest, Object* questGiver,
         Quest const* pQuest = sObjectMgr->GetQuestTemplate(questID);
         const std::string text_quest = ChatHelper::FormatQuest(pQuest);
         LOG_INFO("playerbots", "{} => Quest [ {} ] completed", bot->GetName(), pQuest->GetTitle());
-        bot->Say("Quest [ " + text_quest + " ] completed", LANG_UNIVERSAL);
+        botAI->Say("Quest [ " + text_quest + " ] completed");
     }
 
     return true;

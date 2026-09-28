@@ -22,6 +22,15 @@
 #include "Playerbots.h"
 #include "ServerFacade.h"
 
+bool AgentInviteToGroupAction::Execute(Event event)
+{
+    Player* target = event.getOwner();
+    if (!target || target == bot)
+        return false;
+
+    return Invite(bot, target);
+}
+
 bool InviteToGroupAction::Invite(Player* inviter, Player* player)
 {
     if (!player)

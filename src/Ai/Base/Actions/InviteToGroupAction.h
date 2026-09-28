@@ -35,6 +35,13 @@ public:
     virtual bool Invite(Player* inviter, Player* player);
 };
 
+class AgentInviteToGroupAction : public InviteToGroupAction
+{
+public:
+    AgentInviteToGroupAction(PlayerbotAI* botAI) : InviteToGroupAction(botAI, "agent invite to group") {}
+    bool Execute(Event event) override;
+};
+
 class JoinGroupAction : public InviteToGroupAction
 {
 public:

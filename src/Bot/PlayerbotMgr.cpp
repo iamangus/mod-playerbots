@@ -528,7 +528,6 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
         botAI->ResetStrategies(!sRandomPlayerbotMgr.IsRandomBot(bot));
     }
     PlayerbotRepository::instance().Load(botAI);
-
     if (master && !master->HasUnitState(UNIT_STATE_IN_FLIGHT))
     {
         bot->GetMotionMaster()->MovementExpired();

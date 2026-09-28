@@ -5,6 +5,7 @@
  */
 
 #include "PlayerbotAI.h"
+#include "AgentRuntime.h"
 #include "AiFactory.h"
 #include "BudgetValues.h"
 #include "ChannelMgr.h"
@@ -54,9 +55,12 @@
 #include "UpdateTime.h"
 #include "Vehicle.h"
 #include <cmath>
+#include <algorithm>
+#include <cctype>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 
 namespace
 {
@@ -64,6 +68,29 @@ constexpr uint32 SPELL_TITAN_GRIP = 49152;
 constexpr uint32 SPELL_DK_FROST_PRESENCE = 48263;
 constexpr uint32 SPELL_GRAVITY_LAPSE_TK = 39432;
 constexpr uint32 SPELL_GRAVITY_LAPSE_MGT = 44226;
+
+bool IsExplicitPlayerbotCommand(std::string const& message)
+{
+    if (!sPlayerbotAIConfig.commandPrefix.empty() && message.starts_with(sPlayerbotAIConfig.commandPrefix))
+        return true;
+
+    size_t const separator = message.find(' ');
+    std::string command = message.substr(0, separator);
+    std::transform(command.begin(), command.end(), command.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    static std::unordered_set<std::string> const commands = {
+        "accept", "attack", "b", "buff", "c", "cast", "co", "de", "destroy", "e", "follow", "flee",
+        "go", "grind", "home", "invite", "join", "leave", "lfg", "nc", "pull", "q", "r", "repair",
+        "reset", "stay", "summon", "t", "talents",
+    };
+    return commands.find(command) != commands.end();
+}
+
+bool CanSpeakForAgent(PlayerbotAI* ai)
+{
+    AgentRuntime* runtime = ai ? ai->GetAgentRuntime() : nullptr;
+    return !runtime || !runtime->IsEnabled(ai) || runtime->IsSendingChat();
+}
 }
 
 std::vector<std::string> PlayerbotAI::dispel_whitelist = {
@@ -163,6 +190,10 @@ PlayerbotAI::PlayerbotAI(Player* bot)
 
     currentEngine = engines[BOT_STATE_NON_COMBAT];
     currentState = BOT_STATE_NON_COMBAT;
+    if (AgentRuntime::IsSupported() && sPlayerbotAIConfig.agentBridgeEnabled &&
+        (!sPlayerbotAIConfig.agentBridgeBotGuid ||
+         bot->GetGUID().GetCounter() == sPlayerbotAIConfig.agentBridgeBotGuid))
+        agentRuntime = std::make_unique<AgentRuntime>(bot->GetGUID());
 
     masterIncomingPacketHandlers.AddHandler(CMSG_GAMEOBJ_USE, "use game object");
     masterIncomingPacketHandlers.AddHandler(CMSG_AREATRIGGER, "area trigger");
@@ -535,6 +566,9 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
 
         if (logout)
         {
+            if (agentRuntime)
+                agentRuntime->Stop(this);
+
             PlayerbotMgr* masterBotMgr = nullptr;
             if (master)
                 masterBotMgr = GET_PLAYERBOT_MGR(master);
@@ -556,6 +590,9 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     botOutgoingPacketHandlers.Handle(helper);
     masterIncomingPacketHandlers.Handle(helper);
     masterOutgoingPacketHandlers.Handle(helper);
+
+    if (agentRuntime)
+        agentRuntime->Update(this, elapsed);
 
     DoNextAction(minimal);
 
@@ -1173,10 +1210,12 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
         }
         case SMSG_MESSAGECHAT:  // do not react to self or if not ready to reply
         {
-            if (!sPlayerbotAIConfig.randomBotTalk)
+            bool const agentConfigured = agentRuntime && agentRuntime->IsConfigured(this);
+            bool const agentMode = agentRuntime && agentRuntime->IsEnabled(this);
+            if (!sPlayerbotAIConfig.randomBotTalk && !agentConfigured)
                 return;
 
-            if (!AllowActivity())
+            if (!agentConfigured && !AllowActivity())
                 return;
 
             WorldPacket p(packet);
@@ -1211,9 +1250,11 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
                         [[fallthrough]];
                     case CHAT_MSG_SAY:
                     case CHAT_MSG_PARTY:
+                    case CHAT_MSG_RAID:
                     case CHAT_MSG_YELL:
                     case CHAT_MSG_WHISPER:
                     case CHAT_MSG_GUILD:
+                    case CHAT_MSG_OFFICER:
                         p >> guid2;
                         p >> textLen >> message >> chatTag;
                         break;
@@ -1221,16 +1262,24 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
                         return;
                 }
 
-                if (chanName == "World")
+                if (chanName == "World" && !agentConfigured)
                     return;
 
                 // do not reply to self but always try to reply to real player
                 if (guid1 != bot->GetGUID())
                 {
+                    sCharacterCache->GetCharacterNameByGuid(guid1, name);
+                    bool const explicitCommand = IsExplicitPlayerbotCommand(message);
+                    if (agentConfigured && !explicitCommand)
+                        agentRuntime->OnChatMessage(this, msgtype, lang, guid1, name, chanName, message);
+
+                    if (agentMode || (agentConfigured &&
+                                      (explicitCommand || !sPlayerbotAIConfig.randomBotTalk || chanName == "World")))
+                        return;
+
                     time_t lastChat = GetAiObjectContext()->GetValue<time_t>("last said", "chat")->Get();
                     bool isPaused = time(0) < lastChat;
                     bool isFromFreeBot = false;
-                    sCharacterCache->GetCharacterNameByGuid(guid1, name);
                     uint32 accountId = sCharacterCache->GetCharacterAccountIdByGuid(guid1);
                     isFromFreeBot = sPlayerbotAIConfig.IsInRandomAccountList(accountId);
                     bool isMentioned = message.find(bot->GetName()) != std::string::npos;
@@ -1388,6 +1437,24 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
             if (guid != bot->GetGUID())
                 return;
             CheckMountStateAction::CompleteDismount(bot);
+            return;
+        }
+        case SMSG_QUESTUPDATE_COMPLETE:
+        case SMSG_QUESTUPDATE_ADD_KILL:
+        case SMSG_QUESTUPDATE_ADD_ITEM:
+        {
+            if (agentRuntime && agentRuntime->IsEnabled(this))
+                agentRuntime->OnQuestProgress(this, packet.GetOpcode());
+            else
+                botOutgoingPacketHandlers.AddPacket(packet);
+            return;
+        }
+        case SMSG_GROUP_INVITE:
+        {
+            if (agentRuntime && agentRuntime->IsEnabled(this))
+                agentRuntime->OnGroupInvite(this, packet);
+            else
+                botOutgoingPacketHandlers.AddPacket(packet);
             return;
         }
         default:
@@ -2835,6 +2902,8 @@ std::vector<Player*> PlayerbotAI::GetAllPlayersInGroup()
 
 bool PlayerbotAI::SayToGuild(std::string const& msg)
 {
+    if (!CanSpeakForAgent(this))
+        return false;
     if (msg.empty())
     {
         return false;
@@ -2856,8 +2925,25 @@ bool PlayerbotAI::SayToGuild(std::string const& msg)
     return false;
 }
 
+bool PlayerbotAI::SayToGuildOfficers(std::string const& msg)
+{
+    if (!CanSpeakForAgent(this))
+        return false;
+    if (msg.empty() || !bot->GetGuildId())
+        return false;
+
+    Guild* guild = sGuildMgr->GetGuildById(bot->GetGuildId());
+    if (!guild || !guild->HasRankRight(bot, GR_RIGHT_GCHATSPEAK))
+        return false;
+
+    guild->BroadcastToGuild(bot->GetSession(), true, msg.c_str(), LANG_UNIVERSAL);
+    return true;
+}
+
 bool PlayerbotAI::SayToWorld(std::string const& msg)
 {
+    if (!CanSpeakForAgent(this))
+        return false;
     if (msg.empty())
     {
         return false;
@@ -2879,6 +2965,8 @@ bool PlayerbotAI::SayToWorld(std::string const& msg)
 
 bool PlayerbotAI::SayToChannel(std::string const& msg, ChatChannelId const& chanId)
 {
+    if (!CanSpeakForAgent(this))
+        return false;
     // Checks whether the message or ChannelMgr is valid
     if (msg.empty())
         return false;
@@ -2934,6 +3022,8 @@ bool PlayerbotAI::SayToChannel(std::string const& msg, ChatChannelId const& chan
 
 bool PlayerbotAI::SayToParty(std::string const& msg)
 {
+    if (!CanSpeakForAgent(this))
+        return false;
     if (!bot->GetGroup())
         return false;
 
@@ -2951,6 +3041,8 @@ bool PlayerbotAI::SayToParty(std::string const& msg)
 
 bool PlayerbotAI::SayToRaid(std::string const& msg)
 {
+    if (!CanSpeakForAgent(this))
+        return false;
     if (!bot->GetGroup() || !bot->GetGroup()->isRaidGroup())
         return false;
 
@@ -2966,8 +3058,52 @@ bool PlayerbotAI::SayToRaid(std::string const& msg)
     return true;
 }
 
+bool PlayerbotAI::SayToPartyFromAgent(std::string const& msg)
+{
+    if (!CanSpeakForAgent(this))
+        return false;
+    if (msg.empty() || !bot->GetGroup())
+        return false;
+
+    WorldPacket data;
+    ChatHandler::BuildChatPacket(data, CHAT_MSG_PARTY, LANG_UNIVERSAL, bot->GetGUID(), {}, msg, CHAT_TAG_NONE,
+                                 bot->GetName());
+
+    for (Player* receiver : GetAllPlayersInGroup())
+    {
+        if (receiver == bot)
+            continue;
+        ServerFacade::instance().SendPacket(receiver, &data);
+    }
+
+    return true;
+}
+
+bool PlayerbotAI::SayToRaidFromAgent(std::string const& msg)
+{
+    if (!CanSpeakForAgent(this))
+        return false;
+    if (msg.empty() || !bot->GetGroup() || !bot->GetGroup()->isRaidGroup())
+        return false;
+
+    WorldPacket data;
+    ChatHandler::BuildChatPacket(data, CHAT_MSG_RAID, LANG_UNIVERSAL, bot->GetGUID(), {}, msg, CHAT_TAG_NONE,
+                                 bot->GetName());
+
+    for (Player* receiver : GetAllPlayersInGroup())
+    {
+        if (receiver == bot)
+            continue;
+        ServerFacade::instance().SendPacket(receiver, &data);
+    }
+
+    return true;
+}
+
 bool PlayerbotAI::Yell(std::string const& msg)
 {
+    if (!CanSpeakForAgent(this))
+        return false;
     if (bot->GetTeamId() == TeamId::TEAM_ALLIANCE)
     {
         bot->Yell(msg, LANG_COMMON);
@@ -2982,6 +3118,8 @@ bool PlayerbotAI::Yell(std::string const& msg)
 
 bool PlayerbotAI::Say(std::string const& msg)
 {
+    if (!CanSpeakForAgent(this))
+        return false;
     if (bot->GetTeamId() == TeamId::TEAM_ALLIANCE)
     {
         bot->Say(msg, LANG_COMMON);
@@ -3001,6 +3139,9 @@ bool PlayerbotAI::Whisper(std::string const& msg, std::string const& receiverNam
     {
         return false;
     }
+    Player* master = GetMaster();
+    if (!CanSpeakForAgent(this) && (!master || master->GetGUID() != receiver->GetGUID()))
+        return false;
 
     if (bot->GetTeamId() == TeamId::TEAM_ALLIANCE)
     {

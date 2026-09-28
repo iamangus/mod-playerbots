@@ -88,7 +88,9 @@ public:
         creators["move to travel target"] = &ActionContext::move_to_travel_target;
         creators["move out of collision"] = &ActionContext::move_out_of_collision;
         creators["move random"] = &ActionContext::move_random;
+        creators["agent move to target"] = &ActionContext::agent_move_to_target;
         creators["attack"] = &ActionContext::melee;
+        creators["agent attack target"] = &ActionContext::agent_attack_target;
         creators["melee"] = &ActionContext::melee;
         creators["switch to melee"] = &ActionContext::switch_to_melee;
         creators["switch to ranged"] = &ActionContext::switch_to_ranged;
@@ -184,6 +186,7 @@ public:
         creators["auto maintenance on levelup"] = &ActionContext::auto_maintenance_on_levelup;
         creators["xp gain"] = &ActionContext::xp_gain;
         creators["invite nearby"] = &ActionContext::invite_nearby;
+        creators["agent invite to group"] = &ActionContext::agent_invite_to_group;
         creators["invite guild"] = &ActionContext::invite_guild;
         creators["leave far away"] = &ActionContext::leave_far_away;
         creators["move to dark portal"] = &ActionContext::move_to_dark_portal;
@@ -296,6 +299,7 @@ private:
     static Action* move_to_travel_target(PlayerbotAI* botAI) { return new MoveToTravelTargetAction(botAI); }
     static Action* move_out_of_collision(PlayerbotAI* botAI) { return new MoveOutOfCollisionAction(botAI); }
     static Action* move_random(PlayerbotAI* botAI) { return new MoveRandomAction(botAI); }
+    static Action* agent_move_to_target(PlayerbotAI* botAI) { return new AgentMoveToTargetAction(botAI); }
     static Action* check_values(PlayerbotAI* botAI) { return new CheckValuesAction(botAI); }
     static Action* greet(PlayerbotAI* botAI) { return new GreetAction(botAI); }
     static Action* check_mail(PlayerbotAI* botAI) { return new CheckMailAction(botAI); }
@@ -308,6 +312,7 @@ private:
     static Action* _return(PlayerbotAI* botAI) { return new ReturnAction(botAI); }
     static Action* shoot(PlayerbotAI* botAI) { return new CastShootAction(botAI); }
     static Action* melee(PlayerbotAI* botAI) { return new MeleeAction(botAI); }
+    static Action* agent_attack_target(PlayerbotAI* botAI) { return new AgentAttackTargetAction(botAI); }
     static Action* switch_to_melee(PlayerbotAI* botAI) { return new SwitchToMeleeAction(botAI); }
     static Action* switch_to_ranged(PlayerbotAI* botAI) { return new SwitchToRangedAction(botAI); }
     static Action* ReachSpell(PlayerbotAI* botAI) { return new ReachSpellAction(botAI); }
@@ -390,6 +395,7 @@ private:
     static Action* auto_maintenance_on_levelup(PlayerbotAI* botAI) { return new AutoMaintenanceOnLevelupAction(botAI); }
     static Action* xp_gain(PlayerbotAI* botAI) { return new XpGainAction(botAI); }
     static Action* invite_nearby(PlayerbotAI* botAI) { return new InviteNearbyToGroupAction(botAI); }
+    static Action* agent_invite_to_group(PlayerbotAI* botAI) { return new AgentInviteToGroupAction(botAI); }
     static Action* invite_guild(PlayerbotAI* botAI) { return new InviteGuildToGroupAction(botAI); }
     static Action* leave_far_away(PlayerbotAI* botAI) { return new LeaveFarAwayAction(botAI); }
     static Action* move_to_dark_portal(PlayerbotAI* botAI) { return new MoveToDarkPortalAction(botAI); }
