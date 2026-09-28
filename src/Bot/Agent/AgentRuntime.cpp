@@ -4,6 +4,9 @@
  * or (at your option) any later version.
  */
 
+#ifndef BOOST_BIND_GLOBAL_PLACEHOLDERS
+#define BOOST_BIND_GLOBAL_PLACEHOLDERS
+#endif
 #include "AgentRuntime.h"
 #include "AiObjectContext.h"
 #include "ChooseTravelTargetAction.h"
@@ -26,9 +29,6 @@
 #include "WorldPacket.h"
 #if defined(PLAYERBOTS_WITH_TOCLOUD9_SIDECAR)
 #include "libsidecar.h"
-#endif
-#ifndef BOOST_BIND_GLOBAL_PLACEHOLDERS
-#define BOOST_BIND_GLOBAL_PLACEHOLDERS
 #endif
 #include "boost/property_tree/json_parser.hpp"
 #include "boost/property_tree/ptree.hpp"
