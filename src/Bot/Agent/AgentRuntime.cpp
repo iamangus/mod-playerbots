@@ -27,6 +27,9 @@
 #if defined(PLAYERBOTS_WITH_TOCLOUD9_SIDECAR)
 #include "libsidecar.h"
 #endif
+#ifndef BOOST_BIND_GLOBAL_PLACEHOLDERS
+#define BOOST_BIND_GLOBAL_PLACEHOLDERS
+#endif
 #include "boost/property_tree/json_parser.hpp"
 #include "boost/property_tree/ptree.hpp"
 #include <array>
