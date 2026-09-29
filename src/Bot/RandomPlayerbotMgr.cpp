@@ -1413,7 +1413,7 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
         SetEventValue(bot, "update", 1, randomTime);
 
         // do not randomize or teleport immediately after server start (prevent lagging)
-        if (!GetEventValue(bot, "randomize"))
+        if (sPlayerbotAIConfig.randomBotAutoRandomize && !GetEventValue(bot, "randomize"))
         {
             randomTime = urand(3, std::max(4, static_cast<int>(randomBotUpdateInterval * 0.4)));
             ScheduleRandomize(bot, randomTime);
@@ -1569,13 +1569,17 @@ bool RandomPlayerbotMgr::ProcessBot(Player* bot)
             // }
             // if (randomiser)
             // {
-            Randomize(bot);
-            LOG_DEBUG("playerbots", "Bot #{} {}:{} <{}>: randomized", botId,
-                      bot->GetTeamId() == TEAM_ALLIANCE ? "A" : "H", bot->GetLevel(), bot->GetName());
-            uint32 randomTime =
-                urand(sPlayerbotAIConfig.minRandomBotRandomizeTime, sPlayerbotAIConfig.maxRandomBotRandomizeTime);
-            ScheduleRandomize(botId, randomTime);
-            return true;
+            if (sPlayerbotAIConfig.randomBotAutoRandomize)
+            {
+                Randomize(bot);
+                LOG_DEBUG("playerbots", "Bot #{} {}:{} <{}>: randomized", botId,
+                          bot->GetTeamId() == TEAM_ALLIANCE ? "A" : "H", bot->GetLevel(), bot->GetName());
+                uint32 randomTime =
+                    urand(sPlayerbotAIConfig.minRandomBotRandomizeTime, sPlayerbotAIConfig.maxRandomBotRandomizeTime);
+                ScheduleRandomize(botId, randomTime);
+                return true;
+            }
+            SetEventValue(botId, "randomize", 0, 0);
         }
 
         // uint32 changeStrategy = GetEventValue(bot, "change_strategy");

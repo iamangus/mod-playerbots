@@ -190,6 +190,7 @@ public:
     bool agentBridgePopulationEnabled = false;
     uint32 agentBridgePlayerCohortMaxLevel = 10;
     uint32 agentBridgePopulationSnapshotInterval = 60000;
+    bool randomBotAutoRandomize = true;
     bool randomBotSuggestDungeons;
     bool enableBroadcasts;
     bool enableGreet;

@@ -2590,6 +2590,10 @@ AiPlayerbot.AgentBridge.PlayerCohortMaxLevel = 10
 # scans (10000-600000). The snapshot is only queried on controller request.
 # Default: 60000
 AiPlayerbot.AgentBridge.Population.SnapshotInterval = 60000
+# Randomize bot level/gear on first login and periodically. Disable (0) for
+# persistent lifecycle deployments where bots must keep natural progression.
+# Default: 1 (enabled)
+AiPlayerbot.RandomBotAutoRandomize = 1
 # Enable bots emoting
 AiPlayerbot.RandomBotEmote = 0
 # Enable randombots suggesting dungeons in chat

@@ -308,6 +308,7 @@ bool PlayerbotAIConfig::Initialize()
         sConfigMgr->GetOption<uint32>("AiPlayerbot.AgentBridge.PlayerCohortMaxLevel", 10);
     agentBridgePopulationSnapshotInterval = std::clamp<uint32>(
         sConfigMgr->GetOption<uint32>("AiPlayerbot.AgentBridge.Population.SnapshotInterval", 60000), 10000, 600000);
+    randomBotAutoRandomize = sConfigMgr->GetOption<bool>("AiPlayerbot.RandomBotAutoRandomize", true);
     randomBotSuggestDungeons = sConfigMgr->GetOption<bool>("AiPlayerbot.RandomBotSuggestDungeons", true);
     randomBotSayWithoutMaster = sConfigMgr->GetOption<bool>("AiPlayerbot.RandomBotSayWithoutMaster", false);
 
