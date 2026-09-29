@@ -169,11 +169,6 @@ type populationEventResult struct {
 	Level  uint32 `json:"level"`
 }
 
-type createRequest struct {
-	requestID string
-	result    chan populationEventResult
-}
-
 type populationManager struct {
 	owner *controller
 	cfg   populationConfig
