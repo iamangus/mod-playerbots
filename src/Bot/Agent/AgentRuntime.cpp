@@ -12,6 +12,7 @@ namespace boost::property_tree::json_parser::detail
 }
 
 #include "AgentRuntime.h"
+#include "AgentBridgeShared.h"
 #include "AiObjectContext.h"
 #include "ChooseTravelTargetAction.h"
 #include "Creature.h"
@@ -55,8 +56,6 @@ constexpr size_t AGENT_MAX_COMMAND_BYTES = 8192;
 constexpr size_t AGENT_MAX_EVENT_BYTES = 65536;
 constexpr size_t AGENT_MAX_PENDING_COMMANDS = 64;
 constexpr size_t AGENT_MAX_PENDING_EVENTS = 64;
-constexpr uint32 AGENT_RETRY_MS = 2000;
-constexpr uint32 AGENT_STUCK_MS = 600000;
 constexpr uint32 AGENT_HEARTBEAT_MS = 60000;
 constexpr uint32 AGENT_CONTROLLER_TIMEOUT_MS = 90000;
 constexpr uint32 AGENT_MAX_SNAPSHOT_CREATURES = 12;
@@ -87,32 +86,9 @@ struct AgentBridgeInbox
 class AgentBridgeTransport
 {
 public:
-    static std::string OwnerToken()
-    {
-        char const* preferredHost = std::getenv("TC9_PREFERRED_HOSTNAME");
-        if (!preferredHost || !*preferredHost)
-            preferredHost = std::getenv("HOSTNAME");
+    static std::string OwnerToken() { return agent_bridge::OwnerToken(); }
 
-        std::string token = preferredHost ? preferredHost : "local";
-        for (char& character : token)
-        {
-            unsigned char const value = static_cast<unsigned char>(character);
-            if (!std::isalnum(value) && character != '_' && character != '-')
-                character = '_';
-        }
-        return token;
-    }
-
-    static uint32 EventShard(std::string const& botToken)
-    {
-        uint32 hash = 2166136261U;
-        for (unsigned char character : botToken)
-        {
-            hash ^= character;
-            hash *= 16777619U;
-        }
-        return hash % AGENT_EVENT_SHARD_COUNT;
-    }
+    static uint32 EventShard(std::string const& botToken) { return agent_bridge::EventShard(botToken); }
 
     static bool ControllerRecent(std::string const& ownerToken, uint32 eventShard)
     {
@@ -199,7 +175,7 @@ public:
         }
 
         std::string const subject = CommandSubject(subjectPrefix, ownerToken);
-        if (TC9NatsSubscribe(subject.c_str(), &ReceiveCommand) != 0)
+        if (!agent_bridge::Subscribe(subject, &ReceiveCommand))
             return false;
 
         subscribed = true;
@@ -218,7 +194,7 @@ public:
     {
 #if defined(PLAYERBOTS_WITH_TOCLOUD9_SIDECAR)
         std::string const subject = EventSubject(subjectPrefix, ownerToken, botGuid);
-        return TC9NatsPublish(subject.c_str(), event.data(), static_cast<int>(event.size())) == 0;
+        return agent_bridge::Publish(subject, event);
 #else
         (void)subjectPrefix;
         (void)ownerToken;
@@ -335,39 +311,12 @@ private:
 
 std::string EscapeJson(std::string const& value)
 {
-    std::ostringstream out;
-    for (unsigned char character : value)
-    {
-        switch (character)
-        {
-            case '"': out << "\\\""; break;
-            case '\\': out << "\\\\"; break;
-            case '\b': out << "\\b"; break;
-            case '\f': out << "\\f"; break;
-            case '\n': out << "\\n"; break;
-            case '\r': out << "\\r"; break;
-            case '\t': out << "\\t"; break;
-            default:
-                if (character < 0x20)
-                    out << "\\u00" << std::hex << static_cast<uint32>(character) << std::dec;
-                else
-                    out << static_cast<char>(character);
-        }
-    }
-    return out.str();
+    return agent_bridge::EscapeJson(value);
 }
 
 std::string TruncateUtf8(std::string value, size_t maxBytes)
 {
-    if (value.size() <= maxBytes)
-        return value;
-
-    size_t end = maxBytes;
-    while (end > 0 && end < value.size() &&
-           (static_cast<unsigned char>(value[end]) & 0xC0) == 0x80)
-        --end;
-    value.resize(end);
-    return value;
+    return agent_bridge::TruncateUtf8(std::move(value), maxBytes);
 }
 
 std::string GetString(boost::property_tree::ptree const& tree, std::string const& key,
@@ -839,17 +788,17 @@ struct AgentRuntime::Impl
             Player* player = ObjectAccessor::FindPlayer(guid);
             if (!player || player == bot || player->GetMapId() != bot->GetMapId())
                 continue;
-                if (!firstPlayer)
-                    result << ",";
-                firstPlayer = false;
-                result << "{\"guid\":\"" << EscapeJson(AgentBridgeTransport::BotToken(guid))
-                       << "\",\"guid_raw\":\"" << EscapeJson(std::to_string(guid.GetRawValue()))
-                       << "\",\"name\":\"" << EscapeJson(player->GetName()) << "\",\"level\":"
-                       << static_cast<uint32>(player->GetLevel()) << ",\"distance\":" << bot->GetDistance(player)
-                       << ",\"map_id\":" << player->GetMapId() << ",\"position\":["
-                       << player->GetPositionX() << "," << player->GetPositionY() << ","
-                       << player->GetPositionZ() << "],\"is_bot\":"
-                       << (GET_PLAYERBOT_AI(player) ? "true" : "false") << "}";
+            if (!firstPlayer)
+                result << ",";
+            firstPlayer = false;
+            result << "{\"guid\":\"" << EscapeJson(AgentBridgeTransport::BotToken(guid))
+                   << "\",\"guid_raw\":\"" << EscapeJson(std::to_string(guid.GetRawValue()))
+                   << "\",\"name\":\"" << EscapeJson(player->GetName()) << "\",\"level\":"
+                   << static_cast<uint32>(player->GetLevel()) << ",\"distance\":" << bot->GetDistance(player)
+                   << ",\"map_id\":" << player->GetMapId() << ",\"position\":["
+                   << player->GetPositionX() << "," << player->GetPositionY() << ","
+                   << player->GetPositionZ() << "],\"is_bot\":"
+                   << (GET_PLAYERBOT_AI(player) ? "true" : "false") << "}";
             if (++playerCount >= AGENT_MAX_SNAPSHOT_PLAYERS)
                 break;
         }

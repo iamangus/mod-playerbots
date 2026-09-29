@@ -346,6 +346,7 @@ type controller struct {
 	jetstream  nats.JetStreamContext
 	redis      *redis.Client
 	model      *modelClient
+	population *populationManager
 	actorsMu   sync.Mutex
 	actors     map[string]*actor
 	modelSlots chan struct{}
@@ -424,6 +425,12 @@ func main() {
 		owners:    make(map[string]map[uint32]time.Time),
 	}
 	c.startModelWorkers(workers)
+	if populationCfg := loadPopulationConfig(); populationCfg.enabled {
+		c.population = newPopulationManager(c, populationCfg)
+		go c.population.run()
+		log.Printf("population manager started target=%d zones=%d cohort=%v",
+			populationCfg.targetTotal, len(populationCfg.zoneTargets), populationCfg.cohortEnabled)
+	}
 	if err := c.subscribeToShards(); err != nil {
 		log.Fatalf("NATS subscribe failed: %v", err)
 	}
@@ -438,6 +445,9 @@ func main() {
 	<-signalContext.Done()
 	stop()
 	c.shutdown()
+	if c.population != nil {
+		c.population.shutdown()
+	}
 	_ = natsConn.Drain()
 	_ = redisClient.Close()
 }
@@ -463,6 +473,10 @@ func (c *controller) startModelWorkers(count uint32) {
 func (c *controller) subscribeToShards() error {
 	stream := eventStreamName(c.cfg.subjectPrefix)
 	if err := c.ensureEventStream(stream); err != nil {
+		return err
+	}
+	// Population events live in their own subject tree on the same stream.
+	if err := c.ensurePopulationStreamSubject(stream); err != nil {
 		return err
 	}
 	for shard := c.cfg.shardID; shard < eventShardCount; shard += c.cfg.shardCount {
@@ -506,7 +520,7 @@ func (c *controller) ensureEventStream(name string) error {
 		return nil
 	}
 	config := &nats.StreamConfig{
-		Name: name, Subjects: []string{c.cfg.subjectPrefix + ".events.>"},
+		Name: name, Subjects: []string{c.cfg.subjectPrefix + ".events.>", c.cfg.subjectPrefix + ".population.events.>"},
 		Retention: nats.LimitsPolicy, Storage: nats.FileStorage,
 		MaxAge: time.Hour, MaxBytes: 8 << 30, MaxMsgs: -1, MaxMsgsPerSubject: -1,
 		Discard: nats.DiscardOld, Replicas: 1,
@@ -515,6 +529,26 @@ func (c *controller) ensureEventStream(name string) error {
 		if _, infoErr := c.jetstream.StreamInfo(name); infoErr != nil {
 			return fmt.Errorf("create JetStream event stream %s: %w", name, err)
 		}
+	}
+	return nil
+}
+
+// ensurePopulationStreamSubject adds the population subject tree to an
+// existing event stream that predates population management.
+func (c *controller) ensurePopulationStreamSubject(stream string) error {
+	info, err := c.jetstream.StreamInfo(stream)
+	if err != nil {
+		return err
+	}
+	populationSubject := c.cfg.subjectPrefix + ".population.events.>"
+	for _, subject := range info.Config.Subjects {
+		if subject == populationSubject {
+			return nil
+		}
+	}
+	info.Config.Subjects = append(info.Config.Subjects, populationSubject)
+	if _, err := c.jetstream.UpdateStream(&info.Config); err != nil {
+		return fmt.Errorf("add population subjects to stream %s: %w", stream, err)
 	}
 	return nil
 }
@@ -812,8 +846,11 @@ func (a *actor) handleEvent(incoming event) {
 			a.hasSnapshot = true
 			a.snapshotUpdatedAt = time.Now().UTC()
 			if a.state.Profile == "" && current.Bot.Name != "" {
-				a.state.Profile = fmt.Sprintf("%s is a level %d playerbot (class id %d, race id %d). Develop a distinct, steady personality from ongoing interactions.",
-					current.Bot.Name, current.Bot.Level, current.Bot.ClassID, current.Bot.RaceID)
+				a.state.Profile = a.owner.population.BotProfile(a.botGUID)
+				if a.state.Profile == "" {
+					a.state.Profile = fmt.Sprintf("%s is a level %d playerbot (class id %d, race id %d). Develop a distinct, steady personality from ongoing interactions.",
+						current.Bot.Name, current.Bot.Level, current.Bot.ClassID, current.Bot.RaceID)
+				}
 				a.persist()
 			}
 		}
@@ -1958,18 +1995,21 @@ func (a *actor) load() {
 	defer cancel()
 	data, err := a.owner.redis.Get(ctx, a.stateKey()).Bytes()
 	if err == redis.Nil {
-		a.state.Profile = ""
+		a.state.Profile = a.owner.population.BotProfile(a.botGUID)
 		a.persist()
 		return
 	}
 	if err != nil {
 		log.Printf("load agent state for %s: %v", a.botGUID, err)
-		a.state.Profile = ""
+		a.state.Profile = a.owner.population.BotProfile(a.botGUID)
 		return
 	}
 	if err := json.Unmarshal(data, &a.state); err != nil {
 		log.Printf("decode agent state for %s: %v", a.botGUID, err)
-		a.state.Profile = ""
+		a.state.Profile = a.owner.population.BotProfile(a.botGUID)
+	}
+	if a.state.Profile == "" {
+		a.state.Profile = a.owner.population.BotProfile(a.botGUID)
 	}
 	a.ownerToken = a.state.OwnerToken
 	a.recent = append([]recentEvent(nil), a.state.RecentEvents...)

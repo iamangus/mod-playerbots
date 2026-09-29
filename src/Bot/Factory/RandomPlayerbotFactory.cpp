@@ -120,40 +120,9 @@ Player* RandomPlayerbotFactory::CreateRandomBot(WorldSession* session, uint8 cls
         return nullptr;
     }
 
-    std::vector<uint8> skinColors, facialHairTypes;
-    std::vector<std::pair<uint8, uint8>> faces, hairs;
-    for (CharSectionsEntry const* charSection : sCharSectionsStore)
-    {
-        if (charSection->Race != race || charSection->Gender != gender)
-            continue;
-
-        switch (charSection->GenType)
-        {
-            case SECTION_TYPE_SKIN:
-                skinColors.push_back(charSection->Color);
-                break;
-            case SECTION_TYPE_FACE:
-                faces.push_back(std::pair<uint8, uint8>(charSection->Type, charSection->Color));
-                break;
-            case SECTION_TYPE_FACIAL_HAIR:
-                facialHairTypes.push_back(charSection->Type);
-                break;
-            case SECTION_TYPE_HAIR:
-                hairs.push_back(std::pair<uint8, uint8>(charSection->Type, charSection->Color));
-                break;
-        }
-    }
-
-    //uint8 skinColor = skinColors[urand(0, skinColors.size() - 1)]; //not used, line marked for removal.
-    std::pair<uint8, uint8> face = faces[urand(0, faces.size() - 1)];
-    std::pair<uint8, uint8> hair = hairs[urand(0, hairs.size() - 1)];
-
-    bool excludeCheck = (race == RACE_TAUREN) || (race == RACE_DRAENEI) ||
-                        (gender == GENDER_FEMALE && race != RACE_NIGHTELF && race != RACE_UNDEAD_PLAYER);
-    uint8 facialHair = excludeCheck ? 0 : facialHairTypes[urand(0, facialHairTypes.size() - 1)];
-
-    std::unique_ptr<CharacterCreateInfo> characterInfo = std::make_unique<CharacterCreateInfo>(
-        name, race, cls, gender, face.second, face.first, hair.first, hair.second, facialHair);
+    std::unique_ptr<CharacterCreateInfo> characterInfo = BuildCharacterCreateInfo(race, cls, gender, name);
+    if (!characterInfo)
+        return nullptr;
 
     Player* player = new Player(session);
     player->GetMotionMaster()->Initialize();
@@ -179,6 +148,115 @@ Player* RandomPlayerbotFactory::CreateRandomBot(WorldSession* session, uint8 cls
             name.c_str(), race, cls);
 
     return player;
+}
+
+Player* RandomPlayerbotFactory::CreateBot(WorldSession* session, uint8 race, uint8 cls, uint8 gender,
+                                          std::string const& name)
+{
+    if (!IsValidRaceClassCombination(race, cls, sWorld->getIntConfig(CONFIG_EXPANSION)))
+    {
+        LOG_ERROR("playerbots", "Managed bot creation rejected invalid race/class combination: race {}, class {}",
+                race, cls);
+        return nullptr;
+    }
+    if ((1 << (race - 1)) & sWorld->getIntConfig(CONFIG_CHARACTER_CREATING_DISABLED_RACEMASK) ||
+        (1 << (cls - 1)) & sWorld->getIntConfig(CONFIG_CHARACTER_CREATING_DISABLED_CLASSMASK))
+    {
+        LOG_ERROR("playerbots", "Managed bot creation rejected disabled race/class: race {}, class {}", race, cls);
+        return nullptr;
+    }
+
+    std::string botName = name;
+    if (botName.empty())
+    {
+        botName = CreateRandomBotName(CombineRaceAndGender(race, gender));
+        if (botName.empty())
+        {
+            LOG_ERROR("playerbots", "Failed to generate a name for a managed bot (race {}, class {})", race, cls);
+            return nullptr;
+        }
+    }
+    else if (sObjectMgr->CheckPlayerName(botName) != CHAR_NAME_SUCCESS)
+    {
+        LOG_ERROR("playerbots", "Managed bot name \"{}\" is invalid or already reserved", botName.c_str());
+        return nullptr;
+    }
+
+    std::unique_ptr<CharacterCreateInfo> characterInfo = BuildCharacterCreateInfo(race, cls, gender, botName);
+    if (!characterInfo)
+        return nullptr;
+
+    Player* player = new Player(session);
+    player->GetMotionMaster()->Initialize();
+    if (!player->Create(sObjectMgr->GetGenerator<HighGuid::Player>().Generate(), characterInfo.get()))
+    {
+        player->CleanupsBeforeDelete();
+        delete player;
+
+        LOG_ERROR("playerbots", "Unable to create managed bot - name: \"{}\", race: {}, class: {}",
+                botName.c_str(), race, cls);
+        return nullptr;
+    }
+
+    player->setCinematic(2);
+    player->SetAtLoginFlag(AT_LOGIN_NONE);
+    player->SaveToDB(true, false);
+    sCharacterCache->AddCharacterCacheEntry(player->GetGUID(), session->GetAccountId(), player->GetName(),
+                                            player->getGender(), player->getRace(), player->getClass(),
+                                            player->GetLevel());
+
+    LOG_INFO("playerbots", "Managed bot created - name: \"{}\", race: {}, class: {}, level: {}",
+            botName.c_str(), race, cls, player->GetLevel());
+
+    return player;
+}
+
+std::unique_ptr<CharacterCreateInfo> RandomPlayerbotFactory::BuildCharacterCreateInfo(uint8 race, uint8 cls,
+                                                                                      uint8 gender,
+                                                                                      std::string const& name)
+{
+    std::vector<uint8> skinColors, facialHairTypes;
+    std::vector<std::pair<uint8, uint8>> faces, hairs;
+    for (CharSectionsEntry const* charSection : sCharSectionsStore)
+    {
+        if (charSection->Race != race || charSection->Gender != gender)
+            continue;
+
+        switch (charSection->GenType)
+        {
+            case SECTION_TYPE_SKIN:
+                skinColors.push_back(charSection->Color);
+                break;
+            case SECTION_TYPE_FACE:
+                faces.push_back(std::pair<uint8, uint8>(charSection->Type, charSection->Color));
+                break;
+            case SECTION_TYPE_FACIAL_HAIR:
+                facialHairTypes.push_back(charSection->Type);
+                break;
+            case SECTION_TYPE_HAIR:
+                hairs.push_back(std::pair<uint8, uint8>(charSection->Type, charSection->Color));
+                break;
+        }
+    }
+
+    if (faces.empty() || hairs.empty())
+    {
+        LOG_ERROR("playerbots", "No character appearance options for race {} gender {}", race, gender);
+        return nullptr;
+    }
+
+    //uint8 skinColor = skinColors[urand(0, skinColors.size() - 1)]; //not used, line marked for removal.
+    std::pair<uint8, uint8> face = faces[urand(0, faces.size() - 1)];
+    std::pair<uint8, uint8> hair = hairs[urand(0, hairs.size() - 1)];
+
+    bool excludeCheck = (race == RACE_TAUREN) || (race == RACE_DRAENEI) ||
+                        (gender == GENDER_FEMALE && race != RACE_NIGHTELF && race != RACE_UNDEAD_PLAYER);
+    uint8 facialHair = (!excludeCheck && !facialHairTypes.empty())
+                           ? facialHairTypes[urand(0, facialHairTypes.size() - 1)]
+                           : 0;
+
+    return std::make_unique<CharacterCreateInfo>(name, race, cls, gender, face.second, face.first, hair.first,
+                                                 hair.second, facialHair);
 }
 
 std::string const RandomPlayerbotFactory::CreateRandomBotName(NameRaceAndGender raceAndGender)

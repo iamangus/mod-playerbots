@@ -13,12 +13,14 @@
 #include "DBCEnums.h"
 #include "SharedDefines.h"
 #include <map>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 class Player;
 class WorldSession;
+class CharacterCreateInfo;
 
 class RandomPlayerbotFactory
 {
@@ -53,6 +55,14 @@ public:
 
     Player* CreateRandomBot(WorldSession* session, uint8 cls, std::unordered_map<NameRaceAndGender, std::vector<std::string>>& names);
     static void CreateRandomBots();
+
+    // Managed (agent-created) bot provisioning. The controller picks race, class,
+    // gender and optionally a name; the character is created at the server's
+    // configured starting level (default 1) in its racial starting zone.
+    Player* CreateBot(WorldSession* session, uint8 race, uint8 cls, uint8 gender, std::string const& name);
+
+    static std::string const CreateRandomBotName(NameRaceAndGender raceAndGender);
+    static bool IsValidRaceClassCombination(uint8 race, uint8 class_, uint32 expansion);
     static std::string const CreateRandomGuildName();
     static uint32 CalculateTotalAccountCount();
     static uint32 CalculateAvailableCharsPerAccount();
@@ -66,10 +76,9 @@ public:
 private:
     friend class ArenaTeamAssignOperation;
 
-    static bool IsValidRaceClassCombination(uint8 race, uint8 class_, uint32 expansion);
-    std::string const CreateRandomBotName(NameRaceAndGender raceAndGender);
-
     static void AssignBotToArenaTeamInternal(Player* bot);
+    static std::unique_ptr<CharacterCreateInfo> BuildCharacterCreateInfo(uint8 race, uint8 cls, uint8 gender,
+                                                                         std::string const& name);
     static void CollectJoinableBotArenaTeams(ArenaType type, TeamId faction, std::vector<ArenaTeam*>& out);
     static void CreateBotArenaTeam(Player* bot, ArenaType type);
     static bool IsBotArenaTeam(ArenaTeam const* team);

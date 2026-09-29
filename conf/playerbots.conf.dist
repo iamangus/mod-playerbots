@@ -2576,6 +2576,20 @@ AiPlayerbot.AgentBridge.BotGuid = 0
 AiPlayerbot.AgentBridge.SubjectPrefix = "playerbots.v1"
 # Maximum outgoing generated chat length in UTF-8 bytes (64-500).
 AiPlayerbot.AgentBridge.MaxMessageLength = 240
+# Enable external bot population management: create_bot_character and
+# population_snapshot bridge commands plus player first-entry events.
+# Requires the agent bridge. Disabled by default.
+# Default: 0 (disabled)
+AiPlayerbot.AgentBridge.Population.Enabled = 0
+# Real players at or below this level publish a player_first_entry event so the
+# external controller can create a companion bot cohort. Higher-level players
+# are never treated as new arrivals.
+# Default: 10
+AiPlayerbot.AgentBridge.PlayerCohortMaxLevel = 10
+# Minimum interval in milliseconds between population snapshot database
+# scans (10000-600000). The snapshot is only queried on controller request.
+# Default: 60000
+AiPlayerbot.AgentBridge.Population.SnapshotInterval = 60000
 # Enable bots emoting
 AiPlayerbot.RandomBotEmote = 0
 # Enable randombots suggesting dungeons in chat

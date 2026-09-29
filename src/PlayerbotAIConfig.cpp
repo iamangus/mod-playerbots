@@ -303,6 +303,11 @@ bool PlayerbotAIConfig::Initialize()
         sConfigMgr->GetOption<uint32>("AiPlayerbot.AgentBridge.MaxMessageLength", 240), 64, 500);
     agentBridgeSubjectPrefix = sConfigMgr->GetOption<std::string>(
         "AiPlayerbot.AgentBridge.SubjectPrefix", "playerbots.v1");
+    agentBridgePopulationEnabled = sConfigMgr->GetOption<bool>("AiPlayerbot.AgentBridge.Population.Enabled", false);
+    agentBridgePlayerCohortMaxLevel =
+        sConfigMgr->GetOption<uint32>("AiPlayerbot.AgentBridge.PlayerCohortMaxLevel", 10);
+    agentBridgePopulationSnapshotInterval = std::clamp<uint32>(
+        sConfigMgr->GetOption<uint32>("AiPlayerbot.AgentBridge.Population.SnapshotInterval", 60000), 10000, 600000);
     randomBotSuggestDungeons = sConfigMgr->GetOption<bool>("AiPlayerbot.RandomBotSuggestDungeons", true);
     randomBotSayWithoutMaster = sConfigMgr->GetOption<bool>("AiPlayerbot.RandomBotSayWithoutMaster", false);
 

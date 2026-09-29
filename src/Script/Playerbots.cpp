@@ -23,6 +23,7 @@
 #include "PlayerbotSpellRepository.h"
 #include "PlayerbotWorldThreadProcessor.h"
 #include "RandomPlayerbotMgr.h"
+#include "AgentPopulation.h"
 #include "ScriptMgr.h"
 #include "cmath"
 
@@ -139,6 +140,7 @@ public:
         {
             PlayerbotsMgr::instance().AddPlayerbotData(player, false);
             sRandomPlayerbotMgr.OnPlayerLogin(player);
+            AgentPopulation::instance()->OnPlayerLogin(player);
 
             // Before modifying the following messages, please make sure it does not violate the GNU GPLv2
             // license especially if you are distributing a repack or hosting a public server
@@ -424,6 +426,7 @@ public:
     {
         PlayerbotWorldThreadProcessor::instance().Update(diff);
         sRandomPlayerbotMgr.UpdateAI(diff);  // World thread only
+        AgentPopulation::instance()->Update(diff);
     }
 };
 

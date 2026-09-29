@@ -645,6 +645,33 @@ bool RandomPlayerbotMgr::IsAccountType(uint32 accountId, uint8 accountType)
     return PlayerbotsDatabase.Query(stmt) != nullptr;
 }
 
+// Registers an externally provisioned bot account so the login loop can use it
+// immediately, without waiting for the next AssignAccountTypes pass.
+void RandomPlayerbotMgr::RegisterBotAccount(uint32 accountId)
+{
+    if (std::find(rndBotTypeAccounts.begin(), rndBotTypeAccounts.end(), accountId) == rndBotTypeAccounts.end())
+    {
+        PlayerbotsDatabasePreparedStatement* stmt =
+            PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_SEL_ACCOUNT_TYPE_BY_ACCOUNT_AND_TYPE);
+        stmt->SetData(0, accountId);
+        stmt->SetData(1, uint8(1));
+        if (!PlayerbotsDatabase.Query(stmt))
+        {
+            stmt = PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_INS_ACCOUNT_TYPE);
+            stmt->SetData(0, accountId);
+            stmt->SetData(1, uint8(1));
+            PlayerbotsDatabase.Execute(stmt);
+        }
+        rndBotTypeAccounts.push_back(accountId);
+    }
+
+    if (std::find(sPlayerbotAIConfig.randomBotAccounts.begin(), sPlayerbotAIConfig.randomBotAccounts.end(),
+                  accountId) == sPlayerbotAIConfig.randomBotAccounts.end())
+    {
+        sPlayerbotAIConfig.randomBotAccounts.push_back(accountId);
+    }
+}
+
 // Logs-in bots in 4 phases. Phase 1 logs Alliance bots up to how much is expected according to the faction ratio,
 // and Phase 2 logs-in the remainder Horde bots to reach the total maxAllowedBotCount. If maxAllowedBotCount is not
 // reached after Phase 2, the function goes back to log-in Alliance bots and reach maxAllowedBotCount. This is done

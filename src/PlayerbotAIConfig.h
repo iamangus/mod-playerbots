@@ -187,6 +187,9 @@ public:
     uint32 agentBridgeBotGuid = 0;
     uint32 agentBridgeMaxMessageLength = 240;
     std::string agentBridgeSubjectPrefix = "playerbots.v1";
+    bool agentBridgePopulationEnabled = false;
+    uint32 agentBridgePlayerCohortMaxLevel = 10;
+    uint32 agentBridgePopulationSnapshotInterval = 60000;
     bool randomBotSuggestDungeons;
     bool enableBroadcasts;
     bool enableGreet;

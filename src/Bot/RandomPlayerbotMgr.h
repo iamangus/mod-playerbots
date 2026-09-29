@@ -119,6 +119,7 @@ public:
     void OnPlayerLogout(Player* player);
     void OnPlayerLogin(Player* player);
     void OnPlayerLoginError(uint32 bot);
+    void RegisterBotAccount(uint32 accountId);
     Player* GetRandomPlayer();
     std::vector<Player*> GetPlayers() { return players; };
     PlayerBotMap GetAllBots() { return playerBots; };

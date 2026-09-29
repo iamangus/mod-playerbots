@@ -80,3 +80,83 @@ func TestAgentToolSchemasAreJSON(t *testing.T) {
 		t.Fatal("agent tool list is empty")
 	}
 }
+
+func TestParsePopulationSnapshotAggregatesCounts(t *testing.T) {
+	payload := json.RawMessage(`{"status":"completed","total":7,"counts":[
+		{"race":1,"class":1,"level_band":0,"count":4},
+		{"race":2,"class":3,"level_band":0,"count":3}],
+		"zones":[{"zone_id":12,"low_level":2},{"zone_id":14,"low_level":5}]}`)
+	counts := parsePopulationSnapshot(payload)
+	if counts == nil {
+		t.Fatal("snapshot payload was not recognized")
+	}
+	if counts.Total != 7 || counts.ByRace[1] != 4 || counts.ByRace[2] != 3 ||
+		counts.ByClass[1] != 4 || counts.ByClass[3] != 3 ||
+		counts.Zones[12] != 2 || counts.Zones[14] != 5 {
+		t.Fatalf("unexpected aggregation: %+v", counts)
+	}
+}
+
+func TestParsePopulationSnapshotRejectsOtherPayloads(t *testing.T) {
+	if parsePopulationSnapshot(json.RawMessage(`{"status":"rejected","reason":"throttled"}`)) != nil {
+		t.Fatal("a rejection payload must not be parsed as a snapshot")
+	}
+	if parsePopulationSnapshot(json.RawMessage(`not json`)) != nil {
+		t.Fatal("malformed payload must not be parsed as a snapshot")
+	}
+}
+
+func TestChooseRaceClassHonoursZoneConstraintAndDeficits(t *testing.T) {
+	manager := &populationManager{cfg: populationConfig{targetTotal: 10}}
+	// Nothing exists yet: every race/class deficit is 1.0.
+	race, class, ok := manager.chooseRaceClass(12, &populationCounts{ByRace: map[uint32]uint64{},
+		ByClass: map[uint32]uint64{}})
+	if !ok {
+		t.Fatal("expected a valid allocation on an empty population")
+	}
+	if raceStartZones[race] != 12 {
+		t.Fatalf("zone-constrained allocation produced race %d (start zone %d, want 12)", race, raceStartZones[race])
+	}
+	if class == 0 || class == 6 {
+		t.Fatalf("unexpected class %d", class)
+	}
+}
+
+func TestChooseRaceClassPrefersLargestDeficit(t *testing.T) {
+	manager := &populationManager{cfg: populationConfig{targetTotal: 100}}
+	counts := &populationCounts{ByRace: map[uint32]uint64{1: 40}, ByClass: map[uint32]uint64{}}
+	race, _, ok := manager.chooseRaceClass(0, counts)
+	if !ok {
+		t.Fatal("expected a valid allocation")
+	}
+	// Humans are over-represented relative to an equal share of 100/10.
+	if race == 1 {
+		t.Fatal("expected the allocator to avoid the over-represented race")
+	}
+}
+
+func TestChooseRoleMatchesClassCapabilities(t *testing.T) {
+	manager := &populationManager{cfg: populationConfig{targetTotal: 100}}
+	capable := map[string]bool{}
+	for _, role := range classRoles[1] {
+		capable[role] = true
+	}
+	if role := manager.chooseRole(1, nil); !capable[role] {
+		t.Fatalf("warrior returned a non-capable role: %s", role)
+	}
+	if role := manager.chooseRole(8, nil); role != "dps" {
+		t.Fatalf("mage cannot tank or heal, got %s", role)
+	}
+}
+
+func TestPopulationConfigDefaultsDisableWhenNoTarget(t *testing.T) {
+	t.Setenv("AGENT_POPULATION_ENABLED", "1")
+	t.Setenv("AGENT_POPULATION_TARGET_TOTAL", "0")
+	if cfg := loadPopulationConfig(); cfg.enabled {
+		t.Fatal("population management must be disabled without a target")
+	}
+	t.Setenv("AGENT_POPULATION_TARGET_TOTAL", "50")
+	if cfg := loadPopulationConfig(); !cfg.enabled {
+		t.Fatal("population management should enable with a target set")
+	}
+}

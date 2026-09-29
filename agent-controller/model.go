@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -129,6 +130,69 @@ func systemPrompt(profile string) string {
 		"state. Events with new=false are context only and must not be acted on again. Do not repeat an operation already " +
 		"in progress. Reply in the incoming message's language; SAY/YELL use the bot's faction language. Use remember only " +
 		"for durable useful facts, and keep identity stable. Profile: " + profile
+}
+
+// generateProfileSync produces a short playstyle persona for a newly
+// provisioned bot. It falls back to a deterministic template when the model is
+// unavailable so provisioning never blocks on inference.
+func (client *modelClient) generateProfileSync(race, class uint32, role, reason string) string {
+	fallback := fmt.Sprintf("A steady %s %s who prefers playing %s. Created to join the world (%s). "+
+		"Plays predictably, helps nearby players, and works on quests honestly.",
+		raceNames[race], classNames[class], role, strings.ReplaceAll(reason, "_", " "))
+	if client == nil || client.endpoint == "" || client.model == "" {
+		return fallback
+	}
+
+	spec := fmt.Sprintf("Create a short identity profile (2-3 sentences) for a newly created World of Warcraft "+
+		"3.3.5a character: a %s %s who will usually play as %s. Describe playstyle, priorities, and social "+
+		"temperament. Plain text only, no lists.", raceNames[race], classNames[class], role)
+	requestBody := map[string]any{
+		"model": client.model,
+		"max_tokens": 200,
+		"messages": []map[string]string{
+			{"role": "system", "content": "You create concise, stable personas for persistent game characters. " +
+				"Keep the tone grounded and family-friendly."},
+			{"role": "user", "content": spec},
+		},
+	}
+	body, err := json.Marshal(requestBody)
+	if err != nil {
+		return fallback
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), client.timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, client.endpoint, bytes.NewReader(body))
+	if err != nil {
+		return fallback
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if client.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+client.apiKey)
+	}
+	resp, err := client.client.Do(req)
+	if err != nil {
+		return fallback
+	}
+	defer resp.Body.Close()
+	responseBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxLLMResponseBytes+1))
+	if err != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fallback
+	}
+	var decoded struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if json.Unmarshal(responseBytes, &decoded) != nil || len(decoded.Choices) == 0 {
+		return fallback
+	}
+	profile := strings.TrimSpace(decoded.Choices[0].Message.Content)
+	if profile == "" {
+		return fallback
+	}
+	return trimUTF8(profile, 600)
 }
 
 var agentTools = []map[string]any{
