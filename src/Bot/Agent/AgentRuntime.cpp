@@ -710,8 +710,9 @@ struct AgentRuntime::Impl
                    << (travelTarget->isTraveling() ? "true" : "false") << ",\"is_working\":"
                    << (travelTarget->isWorking() ? "true" : "false");
             if (targetPosition)
-                result << ",\"position\":[" << targetPosition->getX() << "," << targetPosition->getY()
-                       << "," << targetPosition->getZ() << "],\"map_id\":" << targetPosition->getMapId();
+                result << ",\"position\":[" << targetPosition->GetPositionX() << ","
+                       << targetPosition->GetPositionY() << "," << targetPosition->GetPositionZ()
+                       << "],\"map_id\":" << targetPosition->GetMapId();
             result << "}";
         }
         else
