@@ -419,7 +419,8 @@ func parsePopulationSnapshot(payload json.RawMessage) *populationCounts {
 			LowLevel uint64 `json:"low_level"`
 		} `json:"zones"`
 	}
-	if json.Unmarshal(payload, &decoded) != nil || len(decoded.Counts) == 0 && len(decoded.Zones) == 0 {
+	if json.Unmarshal(payload, &decoded) != nil || decoded.Status != "completed" ||
+		decoded.Counts == nil || decoded.Zones == nil {
 		return nil
 	}
 	counts := &populationCounts{Total: decoded.Total, ByRace: map[uint32]uint64{},

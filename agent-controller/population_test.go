@@ -6,6 +6,26 @@ import (
 	"time"
 )
 
+func TestEmptyPopulationSnapshot(t *testing.T) {
+	counts := parsePopulationSnapshot(json.RawMessage(`{"status":"completed","total":0,"counts":[],"zones":[]}`))
+	if counts == nil {
+		t.Fatal("empty realm snapshot must establish a population count for initial provisioning")
+	}
+	if counts.Total != 0 || len(counts.ByRace) != 0 || len(counts.ByClass) != 0 || len(counts.Zones) != 0 {
+		t.Fatalf("unexpected empty realm counts: %+v", counts)
+	}
+	for _, payload := range []string{
+		`{"status":"completed","guid":123,"name":"Example"}`,
+		`{"status":"failed","counts":[],"zones":[]}`,
+		`{"status":"completed","counts":null,"zones":null}`,
+		`{`,
+	} {
+		if got := parsePopulationSnapshot(json.RawMessage(payload)); got != nil {
+			t.Fatalf("non-snapshot or failed result accepted as a population snapshot: %s", payload)
+		}
+	}
+}
+
 func TestPopulationOwnerDiscoveryWithoutBots(t *testing.T) {
 	c := &controller{owners: make(map[string]map[uint32]time.Time)}
 	m := newPopulationManager(c, populationConfig{maxConcurrent: 1})
