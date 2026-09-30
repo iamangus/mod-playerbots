@@ -293,6 +293,7 @@ type snapshot struct {
 		DestinationName string    `json:"destination_name"`
 		IsTraveling     bool      `json:"is_traveling"`
 		IsWorking       bool      `json:"is_working"`
+		Arrived         bool      `json:"arrived"`
 		Position        []float64 `json:"position"`
 		MapID           uint32    `json:"map_id"`
 	} `json:"travel_target"`
@@ -1361,7 +1362,7 @@ func positionDistance(left, right []float64) float64 {
 func (a *actor) advanceDestinationTask(current *task) {
 	travel := a.latest.TravelTarget
 	if travel != nil {
-		if travel.IsWorking {
+		if destinationArrived(a.latest) {
 			a.finishTask("completed", "arrived at destination")
 			return
 		}
@@ -1383,6 +1384,12 @@ func (a *actor) advanceDestinationTask(current *task) {
 		map[string]any{"destination": current.DestinationName})
 	current.LastProgressUTC = time.Now().UTC()
 	a.persist()
+}
+
+func destinationArrived(state snapshot) bool {
+	target := state.TravelTarget
+	return target != nil && target.MapID == state.Bot.MapID && !target.IsTraveling &&
+		(target.IsWorking || target.Arrived)
 }
 
 func targetStatus(state snapshot, guid string) (found, alive, lootPossible bool, healthPct uint32) {

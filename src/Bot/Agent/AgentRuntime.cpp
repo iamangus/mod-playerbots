@@ -659,10 +659,12 @@ struct AgentRuntime::Impl
         if (travelTarget && destination && travelTarget->isActive())
         {
             WorldPosition* targetPosition = travelTarget->getPosition();
+            WorldPosition botPosition(bot);
             result << ",\"travel_target\":{\"destination_name\":\""
                    << EscapeJson(destination->getName()) << "\",\"is_traveling\":"
                    << (travelTarget->isTraveling() ? "true" : "false") << ",\"is_working\":"
-                   << (travelTarget->isWorking() ? "true" : "false");
+                   << (travelTarget->isWorking() ? "true" : "false")
+                   << ",\"arrived\":" << (destination->isIn(&botPosition) ? "true" : "false");
             if (targetPosition)
                 result << ",\"position\":[" << targetPosition->GetPositionX() << ","
                        << targetPosition->GetPositionY() << "," << targetPosition->GetPositionZ()

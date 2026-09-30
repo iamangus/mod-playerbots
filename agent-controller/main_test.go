@@ -55,6 +55,34 @@ func TestStatefulOrdinal(t *testing.T) {
 	}
 }
 
+func TestDestinationArrivalSurvivesCoreCooldown(t *testing.T) {
+	var state snapshot
+	if err := json.Unmarshal([]byte(`{"bot":{"map_id":1},"travel_target":{"map_id":1,"is_working":false,"arrived":true}}`), &state); err != nil {
+		t.Fatal(err)
+	}
+	if !destinationArrived(state) {
+		t.Fatal("core arrival was lost when the destination entered cooldown")
+	}
+	state.TravelTarget.IsTraveling = true
+	if destinationArrived(state) {
+		t.Fatal("traveling task was marked arrived")
+	}
+	state.TravelTarget.IsTraveling = false
+	state.Bot.MapID = 0
+	if destinationArrived(state) {
+		t.Fatal("cross-map task was marked arrived")
+	}
+	state.Bot.MapID = 1
+	state.TravelTarget.Arrived = false
+	if destinationArrived(state) {
+		t.Fatal("inactive travel target was marked arrived")
+	}
+	state.TravelTarget.IsWorking = true
+	if !destinationArrived(state) {
+		t.Fatal("legacy working-state arrival was not retained")
+	}
+}
+
 func TestDecisionJitterIsStableAndBounded(t *testing.T) {
 	interval := 30 * time.Minute
 	first := decisionJitter("Player-1-123", interval)
