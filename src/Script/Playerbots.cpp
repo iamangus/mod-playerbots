@@ -24,6 +24,7 @@
 #include "PlayerbotWorldThreadProcessor.h"
 #include "RandomPlayerbotMgr.h"
 #include "AgentPopulation.h"
+#include "TravelMgr.h"
 #include "ScriptMgr.h"
 #include "cmath"
 
@@ -386,6 +387,7 @@ class PlayerbotsWorldScript : public WorldScript
 public:
     PlayerbotsWorldScript() : WorldScript("PlayerbotsWorldScript", {
         WORLDHOOK_ON_BEFORE_WORLD_INITIALIZED,
+        WORLDHOOK_ON_STARTUP,
         WORLDHOOK_ON_UPDATE
     }) {}
 
@@ -420,6 +422,12 @@ public:
         CheckMountStateAction::LoadPreferredMounts();
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");
+    }
+
+    void OnStartup() override
+    {
+        if (sPlayerbotAIConfig.agentBridgeEnabled)
+            sTravelMgr.LoadQuestTravelTable();
     }
 
     void OnUpdate(uint32 diff) override

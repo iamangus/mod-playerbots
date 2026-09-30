@@ -1251,7 +1251,7 @@ func (a *actor) advanceTask() {
 		a.advanceGatherTask(current)
 	case "quest":
 		a.advanceQuestTask(current)
-	case "navigate_player", "follow_player":
+	case "navigate_player", "navigate_to_player", "follow_player":
 		a.advancePlayerNavigationTask(current)
 	case "navigate_destination":
 		a.advanceDestinationTask(current)
@@ -1261,6 +1261,9 @@ func (a *actor) advanceTask() {
 }
 
 func (a *actor) startPlayerNavigationTask(kind string, args map[string]json.RawMessage) {
+	if kind == "navigate_to_player" {
+		kind = "navigate_player"
+	}
 	var targetName string
 	_ = json.Unmarshal(args["player_name"], &targetName)
 	var targetGUID string
@@ -1326,7 +1329,7 @@ func (a *actor) advancePlayerNavigationTask(current *task) {
 		if len(target.Position) >= 3 && len(a.latest.Bot.Position) >= 3 {
 			distance = positionDistance(a.latest.Bot.Position, target.Position)
 		}
-		if current.Kind == "navigate_player" && distance <= current.GoalDistance {
+		if (current.Kind == "navigate_player" || current.Kind == "navigate_to_player") && distance <= current.GoalDistance {
 			a.finishTask("completed", "arrived at player")
 			return
 		}

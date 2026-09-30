@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/redis/go-redis/v9"
 )
 
 const (
@@ -101,15 +103,15 @@ var raceStartZones = map[uint32]uint32{
 }
 
 var validClassRaces = map[uint32][]uint32{
-	1:  {1, 2, 3, 4, 5, 6, 7, 8, 10, 11}, // Warrior
-	2:  {1, 3, 10, 11},                   // Paladin
-	3:  {2, 3, 4, 6, 8, 10, 11},          // Hunter
-	4:  {1, 2, 3, 4, 7, 8, 10},           // Rogue
-	5:  {1, 3, 4, 5, 8, 10, 11},          // Priest
-	7:  {2, 6, 8, 11},                    // Shaman
-	8:  {1, 5, 7, 8, 10, 11},             // Mage
-	9:  {1, 2, 5, 7, 10},                 // Warlock
-	11: {4, 6},                           // Druid
+	1:  {1, 2, 3, 4, 5, 6, 7, 8, 11}, // Warrior (Blood Elves cannot be warriors in WotLK)
+	2:  {1, 3, 10, 11},               // Paladin
+	3:  {2, 3, 4, 6, 8, 10, 11},      // Hunter
+	4:  {1, 2, 3, 4, 7, 8, 10},       // Rogue
+	5:  {1, 3, 4, 5, 8, 10, 11},      // Priest
+	7:  {2, 6, 8, 11},                // Shaman
+	8:  {1, 5, 7, 8, 10, 11},         // Mage
+	9:  {1, 2, 5, 7, 10},             // Warlock
+	11: {4, 6},                       // Druid
 }
 
 var validRaceClasses = func() map[uint32][]uint32 {
@@ -145,19 +147,21 @@ var classNames = map[uint32]string{
 }
 
 type populationCounts struct {
-	Total   uint64            `json:"total"`
-	ByRace  map[uint32]uint64 `json:"by_race,omitempty"`
-	ByClass map[uint32]uint64 `json:"by_class,omitempty"`
-	Zones   map[uint32]uint64 `json:"zones,omitempty"`
+	SnapshotAt int64             `json:"snapshot_at"`
+	Total      uint64            `json:"total"`
+	ByRace     map[uint32]uint64 `json:"by_race,omitempty"`
+	ByClass    map[uint32]uint64 `json:"by_class,omitempty"`
+	Zones      map[uint32]uint64 `json:"zones,omitempty"`
 }
 
 type populationReservation struct {
-	Race       uint32 `json:"race"`
-	Class      uint32 `json:"class"`
-	Role       string `json:"role"`
-	Zone       uint32 `json:"zone"`
-	Reason     string `json:"reason"`
-	CreatedUTC int64  `json:"created_utc"`
+	ConfirmedAt int64  `json:"confirmed_at,omitempty"`
+	Race        uint32 `json:"race"`
+	Class       uint32 `json:"class"`
+	Role        string `json:"role"`
+	Zone        uint32 `json:"zone"`
+	Reason      string `json:"reason"`
+	CreatedUTC  int64  `json:"created_utc"`
 }
 
 type botRecord struct {
@@ -174,11 +178,12 @@ type botRecord struct {
 }
 
 type populationEventResult struct {
-	Status string `json:"status"`
-	GUID   uint32 `json:"guid"`
-	Name   string `json:"name"`
-	Reason string `json:"reason"`
-	Level  uint32 `json:"level"`
+	Timestamp int64  `json:"-"`
+	Status    string `json:"status"`
+	GUID      uint32 `json:"guid"`
+	Name      string `json:"name"`
+	Reason    string `json:"reason"`
+	Level     uint32 `json:"level"`
 }
 
 type populationManager struct {
@@ -220,6 +225,10 @@ func (m *populationManager) shutdown() {
 func (m *populationManager) BotProfile(botGUID string) string {
 	if m == nil || !m.cfg.enabled {
 		return ""
+	}
+	// Older bridges use the display GUID as their stable routing token.
+	if _, low, found := strings.Cut(botGUID, "_Low__"); found {
+		botGUID = low
 	}
 	guid, err := strconv.ParseUint(botGUID, 10, 32)
 	if err != nil {
@@ -383,6 +392,7 @@ func (m *populationManager) handlePlayerFirstEntry(incoming event) {
 
 func (m *populationManager) handlePopulationResult(incoming event) {
 	if snapshot := parsePopulationSnapshot(incoming.Payload); snapshot != nil {
+		snapshot.SnapshotAt = incoming.Timestamp
 		m.storeCounts(*snapshot)
 	}
 	var result populationEventResult
@@ -397,7 +407,7 @@ func (m *populationManager) handlePopulationResult(incoming event) {
 	}
 	select {
 	case wait <- populationEventResult{Status: result.Status, GUID: result.GUID, Name: result.Name,
-		Reason: result.Reason, Level: result.Level}:
+		Reason: result.Reason, Level: result.Level, Timestamp: incoming.Timestamp}:
 	default:
 	}
 }
@@ -516,30 +526,71 @@ func (m *populationManager) cachedCounts() *populationCounts {
 	return &stored.Counts
 }
 
-func (m *populationManager) liveReservationCount() uint32 {
+// effectiveCounts includes creations not yet reflected in the authoritative snapshot.
+func (m *populationManager) effectiveCounts() *populationCounts {
+	counts := m.cachedCounts()
+	if counts == nil || counts.SnapshotAt == 0 || time.Since(time.UnixMilli(counts.SnapshotAt)) > 10*time.Minute {
+		return nil
+	}
+	if counts.ByRace == nil {
+		counts.ByRace = make(map[uint32]uint64)
+	}
+	if counts.ByClass == nil {
+		counts.ByClass = make(map[uint32]uint64)
+	}
+	if counts.Zones == nil {
+		counts.Zones = make(map[uint32]uint64)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	keys, err := m.owner.redis.Keys(ctx, m.prefixKey("resv:*")).Result()
-	if err != nil {
-		return 0
+	var cursor uint64
+	for {
+		keys, next, err := m.owner.redis.Scan(ctx, cursor, m.prefixKey("resv:*"), 100).Result()
+		if err != nil {
+			return nil
+		}
+		for _, key := range keys {
+			data, err := m.owner.redis.Get(ctx, key).Bytes()
+			if err == redis.Nil {
+				continue
+			}
+			var r populationReservation
+			if err != nil || json.Unmarshal(data, &r) != nil {
+				return nil
+			}
+			if r.ConfirmedAt != 0 && r.ConfirmedAt <= counts.SnapshotAt {
+				continue
+			}
+			counts.Total++
+			counts.ByRace[r.Race]++
+			counts.ByClass[r.Class]++
+			counts.Zones[r.Zone]++
+		}
+		cursor = next
+		if cursor == 0 {
+			return counts
+		}
 	}
-	return uint32(len(keys))
 }
 
 func (m *populationManager) reconcile() {
-	counts := m.cachedCounts()
+	counts := m.effectiveCounts()
 	if counts == nil {
 		m.requestSnapshot()
 		return
 	}
 
-	reserved := m.liveReservationCount()
+	// Fill starter-zone shortages first; then fill the remaining realm deficit.
+	m.refillZones(counts)
+	counts = m.effectiveCounts()
+	if counts == nil {
+		return
+	}
 	var totalDeficit uint32
-	if counts.Total+uint64(reserved) < uint64(m.cfg.targetTotal) {
-		totalDeficit = uint32(uint64(m.cfg.targetTotal) - counts.Total - uint64(reserved))
+	if counts.Total < uint64(m.cfg.targetTotal) {
+		totalDeficit = uint32(uint64(m.cfg.targetTotal) - counts.Total)
 	}
 	if totalDeficit == 0 {
-		m.refillZones(counts, reserved)
 		return
 	}
 
@@ -547,22 +598,16 @@ func (m *populationManager) reconcile() {
 	for i := uint32(0); i < totalDeficit && i < budget; i++ {
 		m.createBot(0, "population_refill")
 	}
-	m.refillZones(counts, reserved)
 }
 
 // refillZones tops up under-populated starting zones with new level-1 bots.
-func (m *populationManager) refillZones(counts *populationCounts, reserved uint32) {
+func (m *populationManager) refillZones(counts *populationCounts) {
 	for zone, target := range m.cfg.zoneTargets {
 		present := counts.Zones[zone]
-		if uint64(reserved)+present >= uint64(target) {
+		if present >= uint64(target) {
 			continue
 		}
 		deficit := target - uint32(present)
-		if deficit > reserved {
-			deficit -= reserved
-		} else {
-			deficit = 0
-		}
 		budget := m.hourlyBudget()
 		for i := uint32(0); i < deficit && i < budget; i++ {
 			m.createBot(zone, "zone_refill")
@@ -623,7 +668,7 @@ func (m *populationManager) chooseRaceClass(zone uint32, counts *populationCount
 			weightSum += weights[k]
 		}
 		if weightSum <= 0 {
-			return float64(len(keys))
+			return float64(m.cfg.targetTotal) / float64(len(keys))
 		}
 		share := weights[key] / weightSum
 		return share * float64(m.cfg.targetTotal)
@@ -655,14 +700,21 @@ func (m *populationManager) chooseRaceClass(zone uint32, counts *populationCount
 		return (target - float64(counts.ByClass[class])) / target
 	}
 
-	worstRace, worstRaceValue := uint32(0), -1.0
+	worstRace, worstRaceValue := uint32(0), math.Inf(-1)
 	for _, race := range races {
 		if value := raceDeficit(race); value > worstRaceValue {
 			worstRace, worstRaceValue = race, value
 		}
 	}
-	worstClass, worstClassValue := uint32(0), -1.0
+	worstClass, worstClassValue := uint32(0), math.Inf(-1)
 	for _, class := range classes {
+		feasible := false
+		for _, race := range validClassRaces[class] {
+			feasible = feasible || allowedRaces(race)
+		}
+		if !feasible {
+			continue
+		}
 		if value := classDeficit(class); value > worstClassValue {
 			worstClass, worstClassValue = class, value
 		}
@@ -672,7 +724,7 @@ func (m *populationManager) chooseRaceClass(zone uint32, counts *populationCount
 	}
 
 	if worstRaceValue >= worstClassValue {
-		bestClass, bestValue := uint32(0), -1.0
+		bestClass, bestValue := uint32(0), math.Inf(-1)
 		for _, class := range validRaceClasses[worstRace] {
 			if value := classDeficit(class); value > bestValue {
 				bestClass, bestValue = class, value
@@ -684,7 +736,7 @@ func (m *populationManager) chooseRaceClass(zone uint32, counts *populationCount
 		return worstRace, bestClass, true
 	}
 
-	bestRace, bestValue := uint32(0), -1.0
+	bestRace, bestValue := uint32(0), math.Inf(-1)
 	for _, race := range validClassRaces[worstClass] {
 		if !allowedRaces(race) {
 			continue
@@ -740,36 +792,64 @@ func (m *populationManager) createBot(zone uint32, reason string) {
 		return
 	}
 	defer func() { <-m.createSlot }()
-
-	if !m.consumeHourlyBudget() {
+	requestID, reservation, ok := m.reserve(zone, reason)
+	if !ok {
 		return
 	}
+	m.executeCreation(requestID, reservation, reason)
+}
 
-	counts := m.cachedCounts()
+func (m *populationManager) reserve(zone uint32, reason string) (string, populationReservation, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	lockKey, lockID := m.prefixKey("allocation-lock"), newID()
+	if !m.owner.redis.SetNX(ctx, lockKey, lockID, 10*time.Second).Val() {
+		cancel()
+		return "", populationReservation{}, false
+	}
+	unlock := func() {
+		m.owner.redis.Eval(ctx, `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end`, []string{lockKey}, lockID)
+		cancel()
+	}
+	counts := m.effectiveCounts()
+	if counts == nil || (reason != "player_cohort" && m.cfg.targetTotal != 0 && counts.Total >= uint64(m.cfg.targetTotal)) {
+		unlock()
+		return "", populationReservation{}, false
+	}
+	if !m.consumeHourlyBudget() {
+		unlock()
+		return "", populationReservation{}, false
+	}
 	race, class, ok := m.chooseRaceClass(zone, counts)
 	if !ok {
+		unlock()
 		log.Printf("population: no valid race/class allocation (zone %d, reason %s)", zone, reason)
-		return
+		return "", populationReservation{}, false
 	}
 	role := m.chooseRole(class, counts)
 
 	requestID := newID()
 	reservation := populationReservation{Race: race, Class: class, Role: role, Zone: zone,
 		Reason: reason, CreatedUTC: time.Now().UTC().Unix()}
+	if reservation.Zone == 0 {
+		reservation.Zone = raceStartZones[race]
+	}
 	reservationData, err := json.Marshal(reservation)
 	if err != nil {
-		return
+		unlock()
+		return "", populationReservation{}, false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	if err := m.owner.redis.Set(ctx, m.prefixKey("resv:"+requestID), reservationData,
 		populationReservationTTL).Err(); err != nil {
-		cancel()
+		unlock()
 		log.Printf("population reservation failed: %v", err)
-		return
+		return "", populationReservation{}, false
 	}
-	cancel()
+	unlock()
+	return requestID, reservation, true
+}
 
-	profile := m.owner.model.generateProfileSync(race, class, role, reason)
+func (m *populationManager) executeCreation(requestID string, reservation populationReservation, reason string) {
+	profile := m.owner.model.generateProfileSync(reservation.Race, reservation.Class, reservation.Role, reason)
 
 	owner := m.activeOwnerToken()
 	if owner == "" {
@@ -792,8 +872,8 @@ func (m *populationManager) createBot(zone uint32, reason string) {
 		"deadline_unix_ms": time.Now().Add(populationCreateTimeout).UnixMilli(),
 		"operation":        "create_bot_character",
 		"arguments": map[string]any{
-			"race": race, "class": class, "role": role, "source": reason,
-			"zone": zone, "profile": profile,
+			"race": reservation.Race, "class": reservation.Class, "role": reservation.Role, "source": reason,
+			"zone": reservation.Zone, "profile": profile,
 		},
 	})
 	if err != nil {
@@ -808,7 +888,7 @@ func (m *populationManager) createBot(zone uint32, reason string) {
 	case result := <-wait:
 		m.finishCreation(requestID, reservation, result, profile, reason)
 	case <-time.After(populationCreateTimeout):
-		log.Printf("population: create_bot_character timed out (request %s); reservation released", requestID)
+		log.Printf("population: create_bot_character timed out (request %s); reservation retained", requestID)
 	case <-m.stop:
 	}
 }
@@ -817,10 +897,19 @@ func (m *populationManager) finishCreation(requestID string, reservation populat
 	result populationEventResult, profile, reason string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	_ = m.owner.redis.Del(ctx, m.prefixKey("resv:"+requestID)).Err()
 	if result.Status != "created" || result.GUID == 0 {
+		_ = m.owner.redis.Del(ctx, m.prefixKey("resv:"+requestID)).Err()
 		log.Printf("population: creation rejected (%s): %s", result.Status, result.Reason)
 		return
+	}
+	reservation.ConfirmedAt = result.Timestamp
+	if reservation.ConfirmedAt == 0 {
+		reservation.ConfirmedAt = time.Now().UnixMilli()
+	}
+	if data, err := json.Marshal(reservation); err == nil {
+		if err := m.owner.redis.Set(ctx, m.prefixKey("resv:"+requestID), data, populationReservationTTL).Err(); err != nil {
+			log.Printf("confirm population reservation %s: %v", requestID, err)
+		}
 	}
 
 	record := botRecord{GUID: result.GUID, Name: result.Name, Race: reservation.Race,

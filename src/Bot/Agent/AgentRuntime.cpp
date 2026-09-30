@@ -21,6 +21,7 @@ namespace boost::property_tree::json_parser::detail
 #include "Group.h"
 #include "Item.h"
 #include "LootObjectStack.h"
+#include "MovementActions.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -733,13 +734,13 @@ struct AgentRuntime::Impl
             result << "]}";
         }
         result << "],\"nearby_creatures\":[";
-        GuidVector creatures = botAI->GetAiObjectContext()->GetValue<GuidVector>("nearest hostile npcs")->Get();
+        GuidVector creatures = botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets")->Get();
         bool firstCreature = true;
         uint32 creatureCount = 0;
         for (ObjectGuid const guid : creatures)
         {
             Creature* creature = botAI->GetCreature(guid);
-            if (!creature || !creature->IsAlive())
+            if (!creature || !creature->IsAlive() || !bot->IsValidAttackTarget(creature))
                 continue;
             if (!firstCreature)
                 result << ",";
@@ -791,7 +792,7 @@ struct AgentRuntime::Impl
             if (!firstPlayer)
                 result << ",";
             firstPlayer = false;
-            result << "{\"guid\":\"" << EscapeJson(AgentBridgeTransport::BotToken(guid))
+            result << "{\"guid\":\"" << EscapeJson(std::to_string(guid.GetRawValue()))
                    << "\",\"guid_raw\":\"" << EscapeJson(std::to_string(guid.GetRawValue()))
                    << "\",\"name\":\"" << EscapeJson(player->GetName()) << "\",\"level\":"
                    << static_cast<uint32>(player->GetLevel()) << ",\"distance\":" << bot->GetDistance(player)
@@ -876,7 +877,9 @@ struct AgentRuntime::Impl
             }
             if (command.operation == "move_random")
             {
-                bool const moved = botAI->DoSpecificAction("move random", Event("move random"), true);
+                // Explicit search commands must not inherit the legacy RPG-target usefulness gate.
+                MoveRandomAction search(botAI);
+                bool const moved = !botAI->GetBot()->IsInCombat() && botAI->CanMove() && search.Execute(Event());
                 PublishResult(command.requestId, command.operationId, command.operation,
                               moved ? "completed" : "rejected",
                               moved ? "local search movement started" : "local search movement failed");

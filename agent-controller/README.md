@@ -26,3 +26,9 @@ global model-worker pool, while Redis leases fence duplicate actor ownership dur
 StatefulSet resharding.
 ToCloud9 enables a file-backed JetStream stream for bridge event subjects with
 one-hour retention, so controller restarts can resume recent unacknowledged events.
+
+Population allocation combines authoritative snapshots with pending and recently
+completed creation reservations. Completed reservations remain counted until a
+snapshot includes their results. Ordinary population and zone refills share the
+configured total target; player-triggered cohorts can add characters beyond it.
+Existing characters are preserved when a target is lowered.

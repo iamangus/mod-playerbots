@@ -44,7 +44,11 @@ bool AgentMoveToTargetAction::Execute(Event event)
         target->GetMapId() != bot->GetMapId())
         return false;
 
-    return Follow(target);
+    if (bot->GetDistance(target) <= sPlayerbotAIConfig.followDistance)
+        return true;
+
+    // The explicit agent primitive does not depend on a legacy follow formation.
+    return MoveNear(target, sPlayerbotAIConfig.followDistance);
 }
 #include <iomanip>
 #include <string>

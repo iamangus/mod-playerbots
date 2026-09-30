@@ -1542,7 +1542,7 @@ bool RandomPlayerbotMgr::ProcessBot(Player* bot)
         idleBot = true;
     }
 
-    if (idleBot)
+    if (idleBot && !sPlayerbotAIConfig.agentBridgePopulationEnabled)
     {
         // randomize
         uint32 randomize = GetEventValue(botId, "randomize");
