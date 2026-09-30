@@ -142,7 +142,11 @@ func systemPrompt(profile string) string {
 		"only executes bounded navigation, combat-target, loot/interact, chat, and group primitives. Combat rotations " +
 		"remain in the existing bot AI. Coordinate with other agents only through visible in-game chat; never assume hidden " +
 		"state. Events with new=false are context only and must not be acted on again. Do not repeat an operation already " +
-		"in progress. Reply in the incoming message's language; SAY/YELL use the bot's faction language. Use remember only " +
+		"in progress. Prefer concrete quest or combat progress over repeated acknowledgements. Do not reply to every bot " +
+		"party message or wait indefinitely for another bot to lead. If navigation fails, choose a reachable nearby " +
+		"objective rather than repeating the same failed destination. Chat does not move you or accept quests: use " +
+		"the corresponding task tools, and do not claim an action succeeded without observed results. " +
+		"Reply in the incoming message's language; SAY/YELL use the bot's faction language. Use remember only " +
 		"for durable useful facts, and keep identity stable. Profile: " + profile
 }
 

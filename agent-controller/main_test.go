@@ -18,6 +18,24 @@ func TestSnapshotFromEventAcceptsWrappedAndDirectSnapshots(t *testing.T) {
 	}
 }
 
+func TestRoutineObservationsPreserveDecisionRevision(t *testing.T) {
+	a := &actor{revision: 7}
+	a.state.Profile = "test bot"
+	for _, kind := range []string{"snapshot", "primitive_progress", "bot_heartbeat"} {
+		a.handleEvent(event{Type: kind, Payload: json.RawMessage(`{"schema_version":1,"bot":{"level":1}}`)})
+		if a.revision != 7 {
+			t.Fatalf("%s invalidated the model decision: revision=%d", kind, a.revision)
+		}
+	}
+	if !a.hasSnapshot || a.latest.Bot.Level != 1 {
+		t.Fatal("routine observation did not update live state")
+	}
+	a.handleEvent(event{Type: "combat_changed", Payload: json.RawMessage(`{}`)})
+	if a.revision != 8 {
+		t.Fatal("meaningful event did not invalidate the old decision")
+	}
+}
+
 func TestWithinAreaBoundsAndMissingPosition(t *testing.T) {
 	center := []float64{0, 0, 0}
 	if !withinArea([]float64{3, 4, 0}, center, 5) {

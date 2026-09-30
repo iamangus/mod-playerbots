@@ -722,7 +722,7 @@ func (a *actor) run() {
 					if a.pendingSnapshotID == "" {
 						a.requestSnapshot()
 					}
-				} else if a.state.Task == nil && time.Now().After(a.nextIdleDecision) {
+				} else if !a.decisionPending && time.Now().After(a.nextIdleDecision) {
 					a.pendingDecisionReason = "periodic_check"
 					a.nextIdleDecision = time.Now().Add(a.owner.cfg.decisionInterval +
 						decisionJitter(a.botGUID, a.owner.cfg.decisionInterval))
@@ -815,7 +815,9 @@ func (a *actor) handleEvent(incoming event) {
 	if incoming.EventID != "" {
 		a.state.LastEventID = incoming.EventID
 	}
-	if incoming.Type != "primitive_progress" && incoming.Type != "bot_heartbeat" {
+	// Routine observations must not invalidate an in-flight decision. Active task
+	// monitoring requests snapshots faster than some model responses arrive.
+	if incoming.Type != "snapshot" && incoming.Type != "primitive_progress" && incoming.Type != "bot_heartbeat" {
 		a.revision++
 	}
 	if incoming.OwnerToken != a.state.OwnerToken ||
