@@ -54,6 +54,7 @@ type config struct {
 	requestTimeout   time.Duration
 	decisionInterval time.Duration
 	maxTokens        uint32
+	reasoningEffort  string
 }
 
 func loadConfig() (config, error) {
@@ -69,6 +70,7 @@ func loadConfig() (config, error) {
 		requestTimeout:   envDuration("LLM_REQUEST_TIMEOUT", 30*time.Second),
 		decisionInterval: envDuration("AGENT_DECISION_INTERVAL", 30*time.Minute),
 		maxTokens:        envUint("LLM_MAX_TOKENS", 512),
+		reasoningEffort:  strings.TrimSpace(os.Getenv("LLM_REASONING_EFFORT")),
 	}
 	if cfg.modelEndpoint == "" || cfg.modelName == "" {
 		return config{}, errors.New("LLM_ENDPOINT and LLM_MODEL are required")

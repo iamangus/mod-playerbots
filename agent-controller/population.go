@@ -54,11 +54,11 @@ func envBool(key string, def bool) bool {
 
 func loadPopulationConfig() populationConfig {
 	cfg := populationConfig{
-		enabled:          envBool("AGENT_POPULATION_ENABLED", false),
-		targetTotal:      envUint("AGENT_POPULATION_TARGET_TOTAL", 200),
-		zoneTargets:      envJSONUintMap("AGENT_POPULATION_ZONE_TARGETS"),
-		raceWeights:      envJSONFloatMap("AGENT_POPULATION_RACE_WEIGHTS"),
-		classWeights:     envJSONFloatMap("AGENT_POPULATION_CLASS_WEIGHTS"),
+		enabled:      envBool("AGENT_POPULATION_ENABLED", false),
+		targetTotal:  envUint("AGENT_POPULATION_TARGET_TOTAL", 200),
+		zoneTargets:  envJSONUintMap("AGENT_POPULATION_ZONE_TARGETS"),
+		raceWeights:  envJSONFloatMap("AGENT_POPULATION_RACE_WEIGHTS"),
+		classWeights: envJSONFloatMap("AGENT_POPULATION_CLASS_WEIGHTS"),
 		roleWeights: map[string]float64{
 			"tank": 0.10, "healer": 0.15, "dps": 0.75,
 		},
@@ -88,28 +88,28 @@ func loadPopulationConfig() populationConfig {
 // excluded because managed bots are always created at the level-1 starting
 // zone; the core remains the authority and revalidates every combination.
 var raceStartZones = map[uint32]uint32{
-	1: 12, // Human -> Elwynn Forest
-	2: 14, // Orc -> Durotar
-	3: 1,  // Dwarf -> Dun Morogh
-	4: 141, // Night Elf -> Teldrassil
-	5: 85, // Undead -> Tirisfal Glades
-	6: 215, // Tauren -> Mulgore
-	7: 1,  // Gnome -> Dun Morogh
-	8: 14, // Troll -> Durotar
+	1:  12,   // Human -> Elwynn Forest
+	2:  14,   // Orc -> Durotar
+	3:  1,    // Dwarf -> Dun Morogh
+	4:  141,  // Night Elf -> Teldrassil
+	5:  85,   // Undead -> Tirisfal Glades
+	6:  215,  // Tauren -> Mulgore
+	7:  1,    // Gnome -> Dun Morogh
+	8:  14,   // Troll -> Durotar
 	10: 3430, // Blood Elf -> Eversong Woods
 	11: 3483, // Draenei -> Azuremyst Isle
 }
 
 var validClassRaces = map[uint32][]uint32{
 	1:  {1, 2, 3, 4, 5, 6, 7, 8, 10, 11}, // Warrior
-	2:  {1, 3, 10, 11},                    // Paladin
-	3:  {2, 3, 4, 6, 8, 10, 11},           // Hunter
-	4:  {1, 2, 3, 4, 7, 8, 10},            // Rogue
-	5:  {1, 3, 4, 5, 8, 10, 11},           // Priest
-	7:  {2, 6, 8, 11},                     // Shaman
-	8:  {1, 5, 7, 8, 10, 11},              // Mage
-	9:  {1, 2, 5, 7, 10},                  // Warlock
-	11: {4, 6},                            // Druid
+	2:  {1, 3, 10, 11},                   // Paladin
+	3:  {2, 3, 4, 6, 8, 10, 11},          // Hunter
+	4:  {1, 2, 3, 4, 7, 8, 10},           // Rogue
+	5:  {1, 3, 4, 5, 8, 10, 11},          // Priest
+	7:  {2, 6, 8, 11},                    // Shaman
+	8:  {1, 5, 7, 8, 10, 11},             // Mage
+	9:  {1, 2, 5, 7, 10},                 // Warlock
+	11: {4, 6},                           // Druid
 }
 
 var validRaceClasses = func() map[uint32][]uint32 {
@@ -145,10 +145,10 @@ var classNames = map[uint32]string{
 }
 
 type populationCounts struct {
-	Total   uint64             `json:"total"`
-	ByRace  map[uint32]uint64  `json:"by_race,omitempty"`
-	ByClass map[uint32]uint64  `json:"by_class,omitempty"`
-	Zones   map[uint32]uint64  `json:"zones,omitempty"`
+	Total   uint64            `json:"total"`
+	ByRace  map[uint32]uint64 `json:"by_race,omitempty"`
+	ByClass map[uint32]uint64 `json:"by_class,omitempty"`
+	Zones   map[uint32]uint64 `json:"zones,omitempty"`
 }
 
 type populationReservation struct {
@@ -161,15 +161,15 @@ type populationReservation struct {
 }
 
 type botRecord struct {
-	GUID     uint32 `json:"guid"`
-	Name     string `json:"name"`
-	Race     uint32 `json:"race"`
-	Class    uint32 `json:"class"`
-	Role     string `json:"role,omitempty"`
-	Zone     uint32 `json:"zone,omitempty"`
-	Profile  string `json:"profile"`
-	Reason   string `json:"reason,omitempty"`
-	Level    uint32 `json:"level"`
+	GUID       uint32 `json:"guid"`
+	Name       string `json:"name"`
+	Race       uint32 `json:"race"`
+	Class      uint32 `json:"class"`
+	Role       string `json:"role,omitempty"`
+	Zone       uint32 `json:"zone,omitempty"`
+	Profile    string `json:"profile"`
+	Reason     string `json:"reason,omitempty"`
+	Level      uint32 `json:"level"`
 	CreatedUTC int64  `json:"created_utc"`
 }
 
@@ -185,11 +185,11 @@ type populationManager struct {
 	owner *controller
 	cfg   populationConfig
 
-	pendingMu   sync.Mutex
-	pending     map[string]chan populationEventResult
-	createSlot  chan struct{}
-	stop        chan struct{}
-	stopOnce    sync.Once
+	pendingMu  sync.Mutex
+	pending    map[string]chan populationEventResult
+	createSlot chan struct{}
+	stop       chan struct{}
+	stopOnce   sync.Once
 }
 
 func newPopulationManager(owner *controller, cfg populationConfig) *populationManager {
@@ -198,9 +198,9 @@ func newPopulationManager(owner *controller, cfg populationConfig) *populationMa
 	}
 	return &populationManager{
 		owner: owner, cfg: cfg,
-		pending: make(map[string]chan populationEventResult),
+		pending:    make(map[string]chan populationEventResult),
 		createSlot: make(chan struct{}, cfg.maxConcurrent),
-		stop: make(chan struct{}),
+		stop:       make(chan struct{}),
 	}
 }
 
@@ -763,7 +763,7 @@ func (m *populationManager) createBot(zone uint32, reason string) {
 	body, err := json.Marshal(map[string]any{
 		"version": 1, "owner_token": owner, "request_id": requestID,
 		"deadline_unix_ms": time.Now().Add(populationCreateTimeout).UnixMilli(),
-		"operation": "create_bot_character",
+		"operation":        "create_bot_character",
 		"arguments": map[string]any{
 			"race": race, "class": class, "role": role, "source": reason,
 			"zone": zone, "profile": profile,

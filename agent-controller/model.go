@@ -12,12 +12,13 @@ import (
 )
 
 type modelClient struct {
-	endpoint  string
-	apiKey    string
-	model     string
-	timeout   time.Duration
-	maxTokens uint32
-	client    *http.Client
+	endpoint        string
+	apiKey          string
+	model           string
+	timeout         time.Duration
+	maxTokens       uint32
+	reasoningEffort string
+	client          *http.Client
 }
 
 type modelToolCall struct {
@@ -27,13 +28,23 @@ type modelToolCall struct {
 
 func newModelClient(cfg config) *modelClient {
 	return &modelClient{
-		endpoint:  cfg.modelEndpoint,
-		apiKey:    cfg.modelAPIKey,
-		model:     cfg.modelName,
-		timeout:   cfg.requestTimeout,
-		maxTokens: cfg.maxTokens,
-		client:    &http.Client{Timeout: cfg.requestTimeout},
+		endpoint:        cfg.modelEndpoint,
+		apiKey:          cfg.modelAPIKey,
+		model:           cfg.modelName,
+		timeout:         cfg.requestTimeout,
+		maxTokens:       cfg.maxTokens,
+		reasoningEffort: cfg.reasoningEffort,
+		client:          &http.Client{Timeout: cfg.requestTimeout},
 	}
+}
+
+// reasoningParam caps reasoning-style models. Providers that do not support
+// the unified reasoning API ignore it.
+func (client *modelClient) reasoningParam() map[string]any {
+	if client == nil || client.reasoningEffort == "" {
+		return nil
+	}
+	return map[string]any{"effort": client.reasoningEffort}
 }
 
 func (client *modelClient) decide(slots chan struct{}, profile string, memories []string,
@@ -67,6 +78,9 @@ func (client *modelClient) decide(slots chan struct{}, profile string, memories 
 		"tools":               agentTools,
 		"tool_choice":         "auto",
 		"parallel_tool_calls": false,
+	}
+	if reasoning := client.reasoningParam(); reasoning != nil {
+		requestBody["reasoning"] = reasoning
 	}
 	body, err := json.Marshal(requestBody)
 	if err != nil {
@@ -147,13 +161,16 @@ func (client *modelClient) generateProfileSync(race, class uint32, role, reason 
 		"3.3.5a character: a %s %s who will usually play as %s. Describe playstyle, priorities, and social "+
 		"temperament. Plain text only, no lists.", raceNames[race], classNames[class], role)
 	requestBody := map[string]any{
-		"model": client.model,
+		"model":      client.model,
 		"max_tokens": 200,
 		"messages": []map[string]string{
 			{"role": "system", "content": "You create concise, stable personas for persistent game characters. " +
 				"Keep the tone grounded and family-friendly."},
 			{"role": "user", "content": spec},
 		},
+	}
+	if reasoning := client.reasoningParam(); reasoning != nil {
+		requestBody["reasoning"] = reasoning
 	}
 	body, err := json.Marshal(requestBody)
 	if err != nil {
