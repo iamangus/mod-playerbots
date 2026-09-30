@@ -225,7 +225,8 @@ void WorldPosition::setO(float o) { m_orientation = o; }
 
 WorldPosition::operator bool() const
 {
-    return GetMapId() != 0 || GetPositionX() != 0 || GetPositionY() != 0 || GetPositionZ() != 0;
+    return GetMapId() != MAPID_INVALID &&
+           (GetMapId() != 0 || GetPositionX() != 0 || GetPositionY() != 0 || GetPositionZ() != 0);
 }
 
 bool operator==(WorldPosition const& p1, WorldPosition const& p2)
