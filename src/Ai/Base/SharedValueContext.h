@@ -26,14 +26,8 @@ public:
     template <class T>
     Value<T>* getGlobalValue(std::string const name)
     {
-        // should never reach here
-        SharedNamedObjectContextList<UntypedValue> sValueContexts;
-        sValueContexts.Add(this);
-        NamedObjectContextList<UntypedValue> valueContexts(sValueContexts);
-        PlayerbotAI* botAI = new PlayerbotAI();
-
-        UntypedValue* value = valueContexts.GetContextObject(name, botAI);
-        delete botAI;
+        // The singleton owns cached global values; their AI must live just as long.
+        UntypedValue* value = create(name, &_globalBotAI);
         return dynamic_cast<Value<T>*>(value);
     }
 
@@ -63,13 +57,15 @@ private:
         creators["quest guidp map"] = &SharedValueContext::quest_guidp_map;
         creators["quest givers"] = &SharedValueContext::quest_givers;
     }
-    ~SharedValueContext() = default;
+    ~SharedValueContext() override { Clear(); }
 
     SharedValueContext(SharedValueContext const&) = delete;
     SharedValueContext& operator=(SharedValueContext const&) = delete;
 
     SharedValueContext(SharedValueContext&&) = delete;
     SharedValueContext& operator=(SharedValueContext&&) = delete;
+
+    PlayerbotAI _globalBotAI;
 
     static UntypedValue* bg_masters(PlayerbotAI* botAI) { return new BgMastersValue(botAI); }
     static UntypedValue* drop_map(PlayerbotAI* botAI) { return new DropMapValue(botAI); }
@@ -79,7 +75,6 @@ private:
     static UntypedValue* entry_quest_relation(PlayerbotAI* botAI) { return new EntryQuestRelationMapValue(botAI); }
     static UntypedValue* quest_guidp_map(PlayerbotAI* botAI) { return new QuestGuidpMapValue(botAI); }
     static UntypedValue* quest_givers(PlayerbotAI* botAI) { return new QuestGiversValue(botAI); }
-
 };
 
 #define sSharedValueContext SharedValueContext::instance()
