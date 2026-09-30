@@ -260,7 +260,7 @@ func (m *populationManager) run() {
 		case <-snapshotTicker.C:
 			m.requestSnapshot()
 		case <-refillTicker.C:
-			if m.acquireLeaderLease() {
+			if m.leaderLeaseHeld() || m.acquireLeaderLease() {
 				m.reconcile()
 			}
 		case <-leaderTicker.C:
