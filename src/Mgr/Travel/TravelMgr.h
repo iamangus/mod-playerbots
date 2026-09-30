@@ -14,6 +14,7 @@
 #include "PlayerbotAIConfig.h"
 #include <boost/functional/hash.hpp>
 #include <map>
+#include <memory>
 #include <random>
 
 class Creature;
@@ -503,13 +504,21 @@ public:
     }
     TravelDestination(std::vector<WorldPosition*> points1, float radiusMin1, float radiusMax1)
     {
-        points = points1;
+        for (WorldPosition* point : points1)
+            addPoint(point);
         radiusMin = radiusMin1;
         radiusMax = radiusMax1;
     }
     virtual ~TravelDestination() = default;
 
-    void addPoint(WorldPosition* pos) { points.push_back(pos); }
+    void addPoint(WorldPosition const* pos)
+    {
+        if (!pos)
+            return;
+
+        _ownedPoints.push_back(std::make_unique<WorldPosition>(*pos));
+        points.push_back(_ownedPoints.back().get());
+    }
 
     void setExpireDelay(uint32 delay) { expireDelay = delay; }
 
@@ -568,6 +577,9 @@ protected:
     uint32 maxVisitorsPerPoint = 0;
     uint32 expireDelay = 5 * 1000;
     uint32 cooldownDelay = 60 * 1000;
+
+private:
+    std::vector<std::unique_ptr<WorldPosition>> _ownedPoints;
 };
 
 // A travel target that is always inactive and jumps to cooldown.

@@ -603,6 +603,10 @@ struct AgentRuntime::Impl
                << ",\"race_id\":" << static_cast<uint32>(bot->getRace()) << ",\"team_id\":"
                << static_cast<uint32>(bot->GetTeamId()) << ",\"level\":" << static_cast<uint32>(bot->GetLevel())
                << ",\"health_pct\":" << (bot->GetMaxHealth() ? bot->GetHealth() * 100 / bot->GetMaxHealth() : 0)
+               << ",\"alive\":" << (bot->IsAlive() ? "true" : "false")
+               << ",\"moving\":" << (bot->isMoving() ? "true" : "false")
+               << ",\"can_move\":" << (botAI->CanMove() ? "true" : "false")
+               << ",\"experience\":" << bot->GetUInt32Value(PLAYER_XP)
                << ",\"in_combat\":" << (bot->IsInCombat() ? "true" : "false") << ",\"map_id\":"
                << bot->GetMapId() << ",\"zone_id\":" << bot->GetZoneId() << ",\"position\":["
                << bot->GetPositionX() << "," << bot->GetPositionY() << "," << bot->GetPositionZ() << "]";
@@ -877,12 +881,19 @@ struct AgentRuntime::Impl
             }
             if (command.operation == "move_random")
             {
+                if (botAI->GetBot()->IsInCombat() || !botAI->CanMove())
+                {
+                    PublishResult(command.requestId, command.operationId, command.operation,
+                                  "rejected", "bot is in combat or movement is restricted");
+                    return;
+                }
                 // Explicit search commands must not inherit the legacy RPG-target usefulness gate.
                 MoveRandomAction search(botAI);
-                bool const moved = !botAI->GetBot()->IsInCombat() && botAI->CanMove() && search.Execute(Event());
+                bool const moved = search.Execute(Event());
                 PublishResult(command.requestId, command.operationId, command.operation,
                               moved ? "completed" : "rejected",
-                              moved ? "local search movement started" : "local search movement failed");
+                              moved ? "local search movement started" :
+                                  (botAI->GetBot()->isMoving() ? "bot is already moving" : "local search path unavailable"));
                 return;
             }
             if (command.operation == "cancel")
