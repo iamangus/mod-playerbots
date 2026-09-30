@@ -264,7 +264,7 @@ struct AgentPopulation::Impl
         }
 
         std::ostringstream payload;
-        payload << "{\"status\":\"created\",\"guid\":\"" << bot->GetGUID().GetCounter() << "\",\"name\":\""
+        payload << "{\"status\":\"created\",\"guid\":" << bot->GetGUID().GetCounter() << ",\"name\":\""
                 << agent_bridge::EscapeJson(bot->GetName()) << "\",\"race\":" << static_cast<uint32>(bot->getRace())
                 << ",\"class\":" << static_cast<uint32>(bot->getClass())
                 << ",\"gender\":" << static_cast<uint32>(bot->getGender())
@@ -283,7 +283,7 @@ struct AgentPopulation::Impl
     {
         std::vector<uint32> accounts;
         QueryResult result =
-            PlayerbotsDatabase.Query("SELECT accountId FROM playerbots_account_type WHERE accountType = 1");
+            PlayerbotsDatabase.Query("SELECT account_id FROM playerbots_account_type WHERE account_type = 1");
         if (result)
         {
             do
