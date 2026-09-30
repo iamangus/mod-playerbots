@@ -41,7 +41,7 @@ func newModelClient(cfg config) *modelClient {
 // reasoningParam caps reasoning-style models. Providers that do not support
 // the unified reasoning API ignore it.
 func (client *modelClient) reasoningParam() map[string]any {
-	if client == nil || client.reasoningEffort == "" || client.reasoningEffort == "none" {
+	if client == nil || client.reasoningEffort == "" {
 		return nil
 	}
 	return map[string]any{"effort": client.reasoningEffort}

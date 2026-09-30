@@ -5,13 +5,23 @@
  */
 
 #include "AgentPopulation.h"
-#include "AgentBridgeShared.h"
+
 #include <boost/bind/placeholders.hpp>
+
+#include "AgentBridgeShared.h"
 
 namespace boost::property_tree::json_parser::detail
 {
-    using boost::placeholders::_1;
+using boost::placeholders::_1;
 }
+
+#include <deque>
+#include <map>
+#include <mutex>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <vector>
 
 #include "AccountMgr.h"
 #include "CharacterCache.h"
@@ -30,13 +40,6 @@ namespace boost::property_tree::json_parser::detail
 #include "WorldSession.h"
 #include "boost/property_tree/json_parser.hpp"
 #include "boost/property_tree/ptree.hpp"
-#include <deque>
-#include <map>
-#include <mutex>
-#include <sstream>
-#include <string>
-#include <thread>
-#include <vector>
 
 namespace
 {
@@ -44,6 +47,7 @@ constexpr size_t POPULATION_MAX_COMMAND_BYTES = 8192;
 constexpr size_t POPULATION_MAX_PENDING_COMMANDS = 64;
 constexpr size_t POPULATION_MAX_RESULT_CACHE = 128;
 constexpr uint32 POPULATION_SUBSCRIBE_RETRY_MS = 5000;
+constexpr uint32 POPULATION_HEARTBEAT_MS = 30000;
 
 struct PopulationCommand
 {
@@ -58,10 +62,7 @@ struct PopulationInbox
     std::deque<PopulationCommand> commands;
 };
 
-std::string PopulationBotToken()
-{
-    return "population";
-}
+std::string PopulationBotToken() { return "population"; }
 
 std::string PopulationCommandSubject(std::string const& prefix, std::string const& ownerToken)
 {
@@ -70,8 +71,8 @@ std::string PopulationCommandSubject(std::string const& prefix, std::string cons
 
 std::string PopulationEventSubject(std::string const& prefix, std::string const& ownerToken)
 {
-    return prefix + ".population.events." + std::to_string(agent_bridge::EventShard(PopulationBotToken())) +
-           "." + ownerToken + "." + PopulationBotToken();
+    return prefix + ".population.events." + std::to_string(agent_bridge::EventShard(PopulationBotToken())) + "." +
+           ownerToken + "." + PopulationBotToken();
 }
 
 std::string GetTreeString(boost::property_tree::ptree const& tree, std::string const& key,
@@ -88,19 +89,19 @@ uint32 GetTreeUInt(boost::property_tree::ptree const& tree, std::string const& k
 std::string BuildEvent(std::string const& type, std::string const& ownerToken, uint64 sequence,
                        std::string const& requestId, std::string const& payload)
 {
-    int64 const eventTime = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
+    int64 const eventTime =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count();
     std::string const botToken = PopulationBotToken();
     std::ostringstream event;
     event << "{\"version\":1,\"event_id\":\"" << agent_bridge::EscapeJson(botToken + "-" + std::to_string(sequence))
           << "\",\"timestamp_unix_ms\":" << eventTime << ",\"type\":\"" << agent_bridge::EscapeJson(type)
           << "\",\"bot_guid\":\"" << agent_bridge::EscapeJson(botToken) << "\",\"owner_token\":\""
           << agent_bridge::EscapeJson(ownerToken) << "\",\"owner_epoch\":\"\",\"request_id\":\""
-          << agent_bridge::EscapeJson(requestId) << "\",\"payload\":"
-          << (payload.empty() ? "{}" : payload) << "}";
+          << agent_bridge::EscapeJson(requestId) << "\",\"payload\":" << (payload.empty() ? "{}" : payload) << "}";
     return event.str();
 }
-}
+}  // namespace
 
 struct AgentPopulation::Impl
 {
@@ -113,6 +114,7 @@ struct AgentPopulation::Impl
     std::map<std::string, std::string> resultCache;
     std::deque<std::string> resultCacheOrder;
     uint32 lastSnapshotMs = 0;
+    uint32 lastHeartbeatMs = 0;
 
     bool PublishEvent(std::string const& type, std::string const& requestId, std::string const& payload)
     {
@@ -134,8 +136,7 @@ struct AgentPopulation::Impl
             }
         }
         if (!PublishEvent("population_result", requestId, payload))
-            LOG_WARN("playerbots.agent", "Failed to publish population result event for request {}",
-                     requestId.c_str());
+            LOG_WARN("playerbots.agent", "Failed to publish population result event for request {}", requestId.c_str());
     }
 
     // Picks a bot account with free character slots, creating a new
@@ -152,9 +153,8 @@ struct AgentPopulation::Impl
         // Find the highest numbered existing prefix account so the next index
         // is unique even after manual account deletions.
         uint32 maxIndex = 0;
-        QueryResult accounts = LoginDatabase.Query(
-            "SELECT username FROM account WHERE username LIKE '{}%'",
-            sPlayerbotAIConfig.randomBotAccountPrefix.c_str());
+        QueryResult accounts = LoginDatabase.Query("SELECT username FROM account WHERE username LIKE '{}%'",
+                                                   sPlayerbotAIConfig.randomBotAccountPrefix.c_str());
         if (accounts)
         {
             do
@@ -192,8 +192,7 @@ struct AgentPopulation::Impl
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
 
-        LoginDatabasePreparedStatement* stmt =
-            LoginDatabase.GetPreparedStatement(LOGIN_GET_ACCOUNT_ID_BY_USERNAME);
+        LoginDatabasePreparedStatement* stmt = LoginDatabase.GetPreparedStatement(LOGIN_GET_ACCOUNT_ID_BY_USERNAME);
         stmt->SetData(0, accountName);
         PreparedQueryResult result = LoginDatabase.Query(stmt);
         if (!result)
@@ -253,9 +252,9 @@ struct AgentPopulation::Impl
         }
 
         RandomPlayerbotFactory factory;
-        WorldSession* session = new WorldSession(accountId, "", 0x0, nullptr, SEC_PLAYER,
-                                                 EXPANSION_WRATH_OF_THE_LICH_KING, time_t(0), LOCALE_enUS, 0,
-                                                 false, false, 0, true);
+        WorldSession* session =
+            new WorldSession(accountId, "", 0x0, nullptr, SEC_PLAYER, EXPANSION_WRATH_OF_THE_LICH_KING, time_t(0),
+                             LOCALE_enUS, 0, false, false, 0, true);
         Player* bot = factory.CreateBot(session, race, cls, gender, name);
         if (!bot)
         {
@@ -267,11 +266,11 @@ struct AgentPopulation::Impl
         std::ostringstream payload;
         payload << "{\"status\":\"created\",\"guid\":\"" << bot->GetGUID().GetCounter() << "\",\"name\":\""
                 << agent_bridge::EscapeJson(bot->GetName()) << "\",\"race\":" << static_cast<uint32>(bot->getRace())
-                << ",\"class\":" << static_cast<uint32>(bot->getClass()) << ",\"gender\":"
-                << static_cast<uint32>(bot->getGender()) << ",\"level\":" << static_cast<uint32>(bot->GetLevel())
-                << ",\"account_id\":" << accountId << ",\"map_id\":" << bot->GetMapId() << ",\"position\":["
-                << bot->GetPositionX() << "," << bot->GetPositionY() << "," << bot->GetPositionZ()
-                << "]}";
+                << ",\"class\":" << static_cast<uint32>(bot->getClass())
+                << ",\"gender\":" << static_cast<uint32>(bot->getGender())
+                << ",\"level\":" << static_cast<uint32>(bot->GetLevel()) << ",\"account_id\":" << accountId
+                << ",\"map_id\":" << bot->GetMapId() << ",\"position\":[" << bot->GetPositionX() << ","
+                << bot->GetPositionY() << "," << bot->GetPositionZ() << "]}";
 
         bot->CleanupsBeforeDelete();
         delete bot;
@@ -298,8 +297,8 @@ struct AgentPopulation::Impl
     void HandlePopulationSnapshot(std::string const& requestId)
     {
         uint32 const now = getMSTime();
-        if (lastSnapshotMs && getMSTimeDiff(lastSnapshotMs, now) <
-                                  sPlayerbotAIConfig.agentBridgePopulationSnapshotInterval)
+        if (lastSnapshotMs &&
+            getMSTimeDiff(lastSnapshotMs, now) < sPlayerbotAIConfig.agentBridgePopulationSnapshotInterval)
         {
             CacheAndPublish(requestId, "{\"status\":\"rejected\",\"reason\":\"snapshot throttled\"}");
             return;
@@ -337,8 +336,8 @@ struct AgentPopulation::Impl
                         counts << ",";
                     first = false;
                     counts << "{\"race\":" << fields[0].Get<uint8>() << ",\"class\":" << fields[1].Get<uint8>()
-                           << ",\"level_band\":" << fields[2].Get<uint8>() << ",\"count\":"
-                           << fields[3].Get<uint64>() << "}";
+                           << ",\"level_band\":" << fields[2].Get<uint8>() << ",\"count\":" << fields[3].Get<uint64>()
+                           << "}";
                     total += fields[3].Get<uint64>();
                 } while (characterCounts->NextRow());
             }
@@ -357,8 +356,8 @@ struct AgentPopulation::Impl
                     if (!first)
                         zones << ",";
                     first = false;
-                    zones << "{\"zone_id\":" << fields[0].Get<uint32>() << ",\"low_level\":"
-                          << fields[1].Get<uint64>() << "}";
+                    zones << "{\"zone_id\":" << fields[0].Get<uint32>() << ",\"low_level\":" << fields[1].Get<uint64>()
+                          << "}";
                 } while (zoneCounts->NextRow());
             }
 
@@ -400,8 +399,7 @@ struct AgentPopulation::Impl
         catch (std::exception const& exception)
         {
             LOG_WARN("playerbots.agent", "Population command failed: {}", exception.what());
-            CacheAndPublish(command.requestId,
-                            "{\"status\":\"rejected\",\"reason\":\"internal population error\"}");
+            CacheAndPublish(command.requestId, "{\"status\":\"rejected\",\"reason\":\"internal population error\"}");
         }
     }
 
@@ -467,9 +465,9 @@ void AgentPopulation::Update(uint32 diff)
     if (!IsEnabled())
         return;
 
-    if (!m_impl->transportReady && (!m_impl->lastSubscribeCheckMs ||
-                                    getMSTimeDiff(m_impl->lastSubscribeCheckMs, getMSTime()) >=
-                                        POPULATION_SUBSCRIBE_RETRY_MS))
+    if (!m_impl->transportReady &&
+        (!m_impl->lastSubscribeCheckMs ||
+         getMSTimeDiff(m_impl->lastSubscribeCheckMs, getMSTime()) >= POPULATION_SUBSCRIBE_RETRY_MS))
     {
         m_impl->lastSubscribeCheckMs = getMSTime();
         m_impl->transportReady = agent_bridge::Subscribe(
@@ -480,6 +478,13 @@ void AgentPopulation::Update(uint32 diff)
     }
     if (!m_impl->transportReady)
         return;
+
+    uint32 const now = getMSTime();
+    if (!m_impl->lastHeartbeatMs || getMSTimeDiff(m_impl->lastHeartbeatMs, now) >= POPULATION_HEARTBEAT_MS)
+    {
+        m_impl->lastHeartbeatMs = now;
+        m_impl->PublishEvent("population_owner_online", "", "{}");
+    }
 
     for (uint32 processed = 0; processed < 4; ++processed)
     {
@@ -514,9 +519,10 @@ void AgentPopulation::OnPlayerLogin(Player* player)
 
     std::ostringstream payload;
     payload << "{\"player_guid\":\"" << guid << "\",\"name\":\"" << agent_bridge::EscapeJson(player->GetName())
-            << "\",\"race\":" << static_cast<uint32>(player->getRace()) << ",\"class\":"
-            << static_cast<uint32>(player->getClass()) << ",\"level\":" << static_cast<uint32>(player->GetLevel())
-            << ",\"map_id\":" << player->GetMapId() << ",\"zone_id\":" << player->GetZoneId() << "}";
+            << "\",\"race\":" << static_cast<uint32>(player->getRace())
+            << ",\"class\":" << static_cast<uint32>(player->getClass())
+            << ",\"level\":" << static_cast<uint32>(player->GetLevel()) << ",\"map_id\":" << player->GetMapId()
+            << ",\"zone_id\":" << player->GetZoneId() << "}";
     if (!m_impl->PublishEvent("player_first_entry", "", payload.str()))
         LOG_WARN("playerbots.agent", "Failed to publish player_first_entry for {}", player->GetName().c_str());
 }

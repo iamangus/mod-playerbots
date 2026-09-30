@@ -190,6 +190,9 @@ type populationManager struct {
 	createSlot chan struct{}
 	stop       chan struct{}
 	stopOnce   sync.Once
+	ownerMu    sync.Mutex
+	ownerToken string
+	ownerSeen  time.Time
 }
 
 func newPopulationManager(owner *controller, cfg populationConfig) *populationManager {
@@ -322,6 +325,18 @@ func (m *populationManager) handlePopulationEvent(data []byte) error {
 		return nil
 	}
 	switch incoming.Type {
+	case "population_owner_online":
+		seen := time.UnixMilli(incoming.Timestamp)
+		age := time.Since(seen)
+		if incoming.Version != 1 || incoming.BotGUID != "population" || incoming.OwnerToken == "" ||
+			age < -30*time.Second || age > 2*time.Minute {
+			return nil
+		}
+		m.ownerMu.Lock()
+		if seen.After(m.ownerSeen) {
+			m.ownerToken, m.ownerSeen = incoming.OwnerToken, seen
+		}
+		m.ownerMu.Unlock()
 	case "player_first_entry":
 		m.handlePlayerFirstEntry(incoming)
 	case "population_result":
@@ -437,7 +452,7 @@ func (m *populationManager) storeCounts(counts populationCounts) {
 }
 
 func (m *populationManager) requestSnapshot() {
-	owner := m.owner.activeOwnerToken()
+	owner := m.activeOwnerToken()
 	if owner == "" {
 		return
 	}
@@ -454,6 +469,17 @@ func (m *populationManager) requestSnapshot() {
 	}
 }
 
+// Population heartbeats discover a gameserver even before its first bot exists.
+// Keep this routing separate from bot-shard heartbeats.
+func (m *populationManager) activeOwnerToken() string {
+	m.ownerMu.Lock()
+	defer m.ownerMu.Unlock()
+	if m.ownerToken != "" && time.Since(m.ownerSeen) <= 2*time.Minute {
+		return m.ownerToken
+	}
+	return m.owner.activeOwnerToken()
+}
+
 // activeOwnerToken returns the most recently observed worldserver owner token
 // so population commands reach a live gameserver pod.
 func (c *controller) activeOwnerToken() string {
@@ -463,7 +489,7 @@ func (c *controller) activeOwnerToken() string {
 	var bestSeen time.Time
 	for ownerToken, shards := range c.owners {
 		for _, lastSeen := range shards {
-			if lastSeen.After(bestSeen) {
+			if time.Since(lastSeen) <= 2*time.Minute && lastSeen.After(bestSeen) {
 				bestSeen = lastSeen
 				bestToken = ownerToken
 			}
@@ -744,7 +770,7 @@ func (m *populationManager) createBot(zone uint32, reason string) {
 
 	profile := m.owner.model.generateProfileSync(race, class, role, reason)
 
-	owner := m.owner.activeOwnerToken()
+	owner := m.activeOwnerToken()
 	if owner == "" {
 		log.Printf("population: no active worldserver owner; dropping %s creation", reason)
 		return
