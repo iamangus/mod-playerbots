@@ -40,9 +40,21 @@ type populationConfig struct {
 	refillInterval   time.Duration
 }
 
+func envBool(key string, def bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return def
+	}
+	return value
+}
+
 func loadPopulationConfig() populationConfig {
 	cfg := populationConfig{
-		enabled:          envUint("AGENT_POPULATION_ENABLED", 0) != 0,
+		enabled:          envBool("AGENT_POPULATION_ENABLED", false),
 		targetTotal:      envUint("AGENT_POPULATION_TARGET_TOTAL", 200),
 		zoneTargets:      envJSONUintMap("AGENT_POPULATION_ZONE_TARGETS"),
 		raceWeights:      envJSONFloatMap("AGENT_POPULATION_RACE_WEIGHTS"),
@@ -52,7 +64,7 @@ func loadPopulationConfig() populationConfig {
 		},
 		maxConcurrent:    int(envUint("AGENT_POPULATION_MAX_CONCURRENT", 2)),
 		maxPerHour:       envUint("AGENT_POPULATION_MAX_PER_HOUR", 60),
-		cohortEnabled:    envUint("AGENT_POPULATION_COHORT_ENABLED", 0) != 0,
+		cohortEnabled:    envBool("AGENT_POPULATION_COHORT_ENABLED", false),
 		cohortSize:       envUint("AGENT_POPULATION_COHORT_SIZE", 12),
 		snapshotInterval: envDuration("AGENT_POPULATION_SNAPSHOT_INTERVAL", 2*time.Minute),
 		refillInterval:   envDuration("AGENT_POPULATION_REFILL_INTERVAL", 5*time.Minute),

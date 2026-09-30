@@ -538,6 +538,12 @@ uint32 RandomPlayerbotFactory::CalculateAvailableCharsPerAccount()
 
 void RandomPlayerbotFactory::CreateRandomBots()
 {
+    if (sPlayerbotAIConfig.agentBridgePopulationEnabled)
+    {
+        LOG_INFO("playerbots", "External bot population management is enabled; the random bot factory will not create accounts or characters");
+        return;
+    }
+
     /* multi-thread here is meaningless? since the async db operations */
 
     if (sPlayerbotAIConfig.deleteRandomBotAccounts)
