@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -124,6 +125,82 @@ func TestAgentToolSchemasAreJSON(t *testing.T) {
 	}
 	if len(decoded) == 0 {
 		t.Fatal("agent tool list is empty")
+	}
+}
+
+func TestNavigationPlayerRequiresVisibleSameMapTarget(t *testing.T) {
+	var state snapshot
+	state.Bot.MapID = 1
+	state.NearbyPlayers = []playerInfo{
+		{GUID: "1", GUIDRaw: "1", Name: "Visible", MapID: 1},
+		{GUID: "2", GUIDRaw: "2", Name: "OtherMap", MapID: 0},
+	}
+	if navigationPlayer(state, "visible", "") == nil {
+		t.Fatal("visible player name was not resolved case-insensitively")
+	}
+	for _, args := range [][2]string{{"Offline", ""}, {"OtherMap", ""}, {"Visible", "99"}, {"", ""}} {
+		if navigationPlayer(state, args[0], args[1]) != nil {
+			t.Fatalf("unavailable or mismatched player was resolved: %v", args)
+		}
+	}
+	if navigationPlayer(state, "", "1") == nil {
+		t.Fatal("visible player GUID was not resolved")
+	}
+}
+
+func TestUnavailableDestinationCooldownIsBoundedAndPersisted(t *testing.T) {
+	var a actor
+	now := time.Now().UTC()
+	a.markDestinationUnavailable(" Missing NPC ", 0, now)
+	if !a.destinationUnavailable("missing npc", 0, now) || a.destinationUnavailable("missing npc", 1, now) {
+		t.Fatal("cooldown normalization or map scope is incorrect")
+	}
+	encoded, err := json.Marshal(a.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored actor
+	if err := json.Unmarshal(encoded, &restored.state); err != nil {
+		t.Fatal(err)
+	}
+	if !restored.destinationUnavailable("missing npc", 0, now) {
+		t.Fatal("cooldown was lost on controller restart")
+	}
+	if a.destinationUnavailable("missing npc", 0, now.Add(unavailableGoalCooldown)) {
+		t.Fatal("expired cooldown still prevents retry")
+	}
+	for index := 0; index < maxEvents+5; index++ {
+		a.markDestinationUnavailable(fmt.Sprintf("destination-%d", index), 0, now)
+	}
+	if len(a.state.UnavailableDestinations) > maxEvents {
+		t.Fatal("failure history exceeded its bound")
+	}
+}
+
+func TestSnapshotPreservesNPCNames(t *testing.T) {
+	var state snapshot
+	if err := json.Unmarshal([]byte(`{"nearby_npcs":[{"guid":"1","name":"Marshal McBride","quest_giver":true}]}`), &state); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.NearbyNPCs) != 1 || state.NearbyNPCs[0].Name != "Marshal McBride" {
+		t.Fatal("NPC names were dropped from model observations")
+	}
+}
+
+func TestTravelStallRequiresActualPositionProgress(t *testing.T) {
+	var current task
+	now := time.Now().UTC()
+	if travelStalled(&current, []float64{1, 2, 3}, now) {
+		t.Fatal("first observation was marked stalled")
+	}
+	if !travelStalled(&current, []float64{1, 2, 3}, now.Add(travelStallTimeout)) {
+		t.Fatal("unchanged position did not time out")
+	}
+	if travelStalled(&current, []float64{5, 2, 3}, now.Add(travelStallTimeout)) {
+		t.Fatal("moving bot was marked stalled")
+	}
+	if travelStalled(&current, []float64{5, 2, 3}, now.Add(travelStallTimeout+time.Second)) {
+		t.Fatal("movement did not reset the stall deadline")
 	}
 }
 

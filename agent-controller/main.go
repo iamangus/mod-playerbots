@@ -26,20 +26,22 @@ import (
 )
 
 const (
-	maxNATSMessageBytes    = 64 * 1024
-	maxLLMResponseBytes    = 1024 * 1024
-	maxMemoryBytes         = 8192
-	maxEvents              = 20
-	eventShardCount        = 256
-	actorLeaseTTL          = 2 * time.Minute
-	actorLeaseRenew        = 30 * time.Second
-	taskMonitorInterval    = 15 * time.Second
-	rescanInterval         = 10 * time.Second
-	minDecisionGap         = 5 * time.Second
-	initialDecisionSpread  = 5 * time.Minute
-	maxRealtimeEventAge    = 2 * time.Minute
-	combatOperationTimeout = 10 * time.Minute
-	travelOperationTimeout = 30 * time.Minute
+	maxNATSMessageBytes     = 64 * 1024
+	maxLLMResponseBytes     = 1024 * 1024
+	maxMemoryBytes          = 8192
+	maxEvents               = 20
+	eventShardCount         = 256
+	actorLeaseTTL           = 2 * time.Minute
+	actorLeaseRenew         = 30 * time.Second
+	taskMonitorInterval     = 15 * time.Second
+	rescanInterval          = 10 * time.Second
+	minDecisionGap          = 5 * time.Second
+	initialDecisionSpread   = 5 * time.Minute
+	maxRealtimeEventAge     = 2 * time.Minute
+	combatOperationTimeout  = 10 * time.Minute
+	travelOperationTimeout  = 30 * time.Minute
+	unavailableGoalCooldown = 5 * time.Minute
+	travelStallTimeout      = 2 * time.Minute
 )
 
 type config struct {
@@ -232,6 +234,10 @@ type snapshot struct {
 		TeamID             uint32    `json:"team_id"`
 		Level              uint32    `json:"level"`
 		HealthPct          uint32    `json:"health_pct"`
+		Alive              *bool     `json:"alive,omitempty"`
+		Moving             bool      `json:"moving"`
+		CanMove            bool      `json:"can_move"`
+		Experience         uint32    `json:"experience"`
 		InCombat           bool      `json:"in_combat"`
 		MapID              uint32    `json:"map_id"`
 		ZoneID             uint32    `json:"zone_id"`
@@ -285,6 +291,7 @@ type snapshot struct {
 	NearbyPlayers []playerInfo `json:"nearby_players"`
 	NearbyNPCs    []struct {
 		GUID       string  `json:"guid"`
+		Name       string  `json:"name"`
 		Entry      uint32  `json:"entry"`
 		QuestGiver bool    `json:"quest_giver"`
 		Distance   float64 `json:"distance"`
@@ -322,18 +329,20 @@ type task struct {
 	LastProgressUTC     time.Time `json:"last_progress_utc"`
 	LastScanUTC         time.Time `json:"last_scan_utc,omitempty"`
 	LastTargetHealthPct uint32    `json:"last_target_health_pct,omitempty"`
+	LastTravelPosition  []float64 `json:"last_travel_position,omitempty"`
 }
 
 type persistedAgent struct {
-	Profile               string        `json:"profile"`
-	Memories              []string      `json:"memories"`
-	Task                  *task         `json:"task,omitempty"`
-	LastEventID           string        `json:"last_event_id,omitempty"`
-	OwnerToken            string        `json:"owner_token,omitempty"`
-	OwnerEpoch            string        `json:"owner_epoch,omitempty"`
-	RecentEvents          []recentEvent `json:"recent_events,omitempty"`
-	PendingDecisionReason string        `json:"pending_decision_reason,omitempty"`
-	DecisionPending       bool          `json:"decision_pending,omitempty"`
+	Profile                 string               `json:"profile"`
+	Memories                []string             `json:"memories"`
+	Task                    *task                `json:"task,omitempty"`
+	LastEventID             string               `json:"last_event_id,omitempty"`
+	OwnerToken              string               `json:"owner_token,omitempty"`
+	OwnerEpoch              string               `json:"owner_epoch,omitempty"`
+	RecentEvents            []recentEvent        `json:"recent_events,omitempty"`
+	PendingDecisionReason   string               `json:"pending_decision_reason,omitempty"`
+	DecisionPending         bool                 `json:"decision_pending,omitempty"`
+	UnavailableDestinations map[string]time.Time `json:"unavailable_destinations,omitempty"`
 }
 
 type recentEvent struct {
@@ -1020,6 +1029,7 @@ func cloneTask(value *task) *task {
 	}
 	copy := *value
 	copy.AreaCenter = append([]float64(nil), value.AreaCenter...)
+	copy.LastTravelPosition = append([]float64(nil), value.LastTravelPosition...)
 	return &copy
 }
 
@@ -1275,8 +1285,16 @@ func (a *actor) startPlayerNavigationTask(kind string, args map[string]json.RawM
 		a.rejectTool(kind, "player_name or target_guid is required")
 		return
 	}
-	if a.state.Task != nil && a.state.Task.Kind == kind &&
-		(a.state.Task.TargetName == targetName || a.state.Task.TargetGUID == targetGUID) {
+	target := navigationPlayer(a.latest, targetName, targetGUID)
+	if target == nil {
+		a.rejectTool(kind, "player is not visible on the current map; choose a target from nearby_players")
+		return
+	}
+	targetName, targetGUID = target.Name, target.GUIDRaw
+	if targetGUID == "" {
+		targetGUID = target.GUID
+	}
+	if a.state.Task != nil && a.state.Task.Kind == kind && a.state.Task.TargetGUID == targetGUID {
 		return
 	}
 	a.cancelTaskPrimitive()
@@ -1299,6 +1317,10 @@ func (a *actor) startDestinationTask(args map[string]json.RawMessage) {
 		a.rejectTool("navigate_to_destination", "destination is required")
 		return
 	}
+	if a.destinationUnavailable(destination, a.latest.Bot.MapID, time.Now().UTC()) {
+		a.rejectTool("navigate_to_destination", "destination was recently unavailable; choose a different destination or nearby objective")
+		return
+	}
 	if a.state.Task != nil && a.state.Task.Kind == "navigate_destination" &&
 		a.state.Task.DestinationName == destination {
 		return
@@ -1312,22 +1334,19 @@ func (a *actor) startDestinationTask(args map[string]json.RawMessage) {
 }
 
 func (a *actor) advancePlayerNavigationTask(current *task) {
-	var target *playerInfo
-	for index := range a.latest.NearbyPlayers {
-		player := &a.latest.NearbyPlayers[index]
-		if (current.TargetGUID != "" &&
-			(player.GUID == current.TargetGUID || player.GUIDRaw == current.TargetGUID)) ||
-			(current.TargetName != "" && player.Name == current.TargetName) {
-			target = player
-			break
-		}
+	target := navigationPlayer(a.latest, current.TargetName, current.TargetGUID)
+	if target == nil {
+		a.finishTask("blocked", "player is no longer visible on the current map")
+		return
 	}
 	if target != nil {
-		if target.MapID != 0 && target.MapID != a.latest.Bot.MapID {
+		if target.MapID != a.latest.Bot.MapID {
 			a.finishTask("blocked", "player moved to another map")
 			return
 		}
-		current.TargetGUID = target.GUIDRaw
+		if target.GUIDRaw != "" {
+			current.TargetGUID = target.GUIDRaw
+		}
 		distance := target.Distance
 		if len(target.Position) >= 3 && len(a.latest.Bot.Position) >= 3 {
 			distance = positionDistance(a.latest.Bot.Position, target.Position)
@@ -1351,6 +1370,51 @@ func (a *actor) advancePlayerNavigationTask(current *task) {
 	a.persist()
 }
 
+func navigationPlayer(state snapshot, name, guid string) *playerInfo {
+	for index := range state.NearbyPlayers {
+		player := &state.NearbyPlayers[index]
+		if player.MapID != state.Bot.MapID {
+			continue
+		}
+		if (guid != "" && (player.GUID == guid || player.GUIDRaw == guid)) ||
+			(guid == "" && name != "" && strings.EqualFold(player.Name, name)) {
+			return player
+		}
+	}
+	return nil
+}
+
+func destinationKey(name string, mapID uint32) string {
+	return fmt.Sprintf("%d:%s", mapID, strings.ToLower(strings.TrimSpace(name)))
+}
+
+func (a *actor) destinationUnavailable(name string, mapID uint32, now time.Time) bool {
+	return a.state.UnavailableDestinations[destinationKey(name, mapID)].After(now)
+}
+
+func (a *actor) markDestinationUnavailable(name string, mapID uint32, now time.Time) {
+	if a.state.UnavailableDestinations == nil {
+		a.state.UnavailableDestinations = make(map[string]time.Time)
+	}
+	for key, expires := range a.state.UnavailableDestinations {
+		if !expires.After(now) {
+			delete(a.state.UnavailableDestinations, key)
+		}
+	}
+	// Bound persisted failure history even if a model invents many names.
+	if len(a.state.UnavailableDestinations) >= maxEvents {
+		var oldestKey string
+		var oldest time.Time
+		for key, expires := range a.state.UnavailableDestinations {
+			if oldestKey == "" || expires.Before(oldest) {
+				oldestKey, oldest = key, expires
+			}
+		}
+		delete(a.state.UnavailableDestinations, oldestKey)
+	}
+	a.state.UnavailableDestinations[destinationKey(name, mapID)] = now.Add(unavailableGoalCooldown)
+}
+
 func positionDistance(left, right []float64) float64 {
 	if len(left) < 3 || len(right) < 3 {
 		return math.MaxFloat64
@@ -1368,7 +1432,10 @@ func (a *actor) advanceDestinationTask(current *task) {
 		}
 		if travel.IsTraveling {
 			current.Retries = 0
-			current.LastProgressUTC = time.Now().UTC()
+			if travelStalled(current, a.latest.Bot.Position, time.Now().UTC()) {
+				a.markDestinationUnavailable(current.DestinationName, current.MapID, time.Now().UTC())
+				a.finishTask("blocked", "navigation made no positional progress; choose another objective")
+			}
 			return
 		}
 	}
@@ -1384,6 +1451,18 @@ func (a *actor) advanceDestinationTask(current *task) {
 		map[string]any{"destination": current.DestinationName})
 	current.LastProgressUTC = time.Now().UTC()
 	a.persist()
+}
+
+func travelStalled(current *task, position []float64, now time.Time) bool {
+	if len(position) < 3 {
+		return false
+	}
+	if len(current.LastTravelPosition) < 3 || positionDistance(current.LastTravelPosition, position) >= 1 {
+		current.LastTravelPosition = append([]float64(nil), position...)
+		current.LastProgressUTC = now
+		return false
+	}
+	return now.Sub(current.LastProgressUTC) >= travelStallTimeout
 }
 
 func destinationArrived(state snapshot) bool {
@@ -1817,6 +1896,11 @@ func (a *actor) handleTaskOperation(incoming event) {
 	}
 	current.OperationID = ""
 	if result.Status != "completed" {
+		if current.Kind == "navigate_destination" && result.Reason == "destination unavailable" {
+			a.markDestinationUnavailable(current.DestinationName, current.MapID, time.Now().UTC())
+			a.finishTask("blocked", "destination unavailable; choose a different destination")
+			return
+		}
 		if result.Status == "rejected" && result.Operation == "gather_target" &&
 			current.Kind == "gather_resources" && current.Phase == "gathering" {
 			current.OperationID = ""
@@ -1974,14 +2058,15 @@ func (a *actor) finishTask(status, reason string) {
 	a.recent = append(a.recent, recentEvent{Type: "task_result", Payload: mustJSON(map[string]any{
 		"task_id": finished.ID, "kind": finished.Kind, "status": status, "reason": reason,
 		"completed": finished.Completed, "goal": finished.GoalCount,
+		"destination": finished.DestinationName, "player_name": finished.TargetName, "target_guid": finished.TargetGUID,
 	}), New: true})
 	if len(a.recent) > maxEvents {
 		a.recent = a.recent[len(a.recent)-maxEvents:]
 	}
 	a.pendingDecisionReason = "task_" + status
 	a.persist()
-	log.Printf("agent task ended bot=%s kind=%s status=%s reason=%q progress=%d/%d",
-		a.botGUID, finished.Kind, status, reason, finished.Completed, finished.GoalCount)
+	log.Printf("agent task ended bot=%s kind=%s status=%s reason=%q destination=%q player=%q progress=%d/%d",
+		a.botGUID, finished.Kind, status, reason, finished.DestinationName, finished.TargetName, finished.Completed, finished.GoalCount)
 	a.requestSnapshot()
 }
 
