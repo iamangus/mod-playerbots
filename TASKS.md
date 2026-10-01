@@ -590,12 +590,39 @@ without retries. Race suite (three runs), vet, C++ codestyle, formatting and
 whitespace pass. Also added per-operation/path-type-change diagnostics for
 failed native movement (path flags and exact start/goal), needed to distinguish
 Melidoran's missing-mesh/partial/invalid route without guessing or bypassing
-terrain. Core/controller builds running under `local-navigation-eligibility`;
-not yet deployed or live-verified.
+terrain. Committed/pushed as `91dca01b`. Core/controller builds succeeded under
+`local-navigation-eligibility`; controller (`bb00d6c0…`) and core (`926630d4…`)
+published and workloads patched by digest; saved pins match. Mandatory reset
+completed all four rollouts (`/tmp/opencode/clean-reset-navigation-eligibility.log`).
+**Completed eligibility capture** (263.9 s, 42 bots, 40 moving): 110 objective
+arrivals, 21 giver arrivals, 10 native rewards across 9 bots, zero
+"quest destination unavailable" rejections and zero native level-rejection
+dispatches; snapshots carried `objective_navigation_blocked_reason` 1023 times
+(levels 3-6 across ten bot/quest pairs) and the controller picked other work
+instead (94 work_on_quest, 53 kill_count, 33 accept_quest decisions). Fifteen
+native recoveries completed. Database shows cohort progression from 41 bots at
+level 2 / 27 at 3 (earlier today) to 8/33/44/14 at levels 2/3/4/5 with 273
+rewarded quests; windows are not a controlled benchmark. Remaining: six
+no-progress navigation runs in that window; diagnostics caught path flags
+17/68/10 (start-off-mesh partial, end-off-mesh partial, no-path) on
+Melidoran-like routes. Controller decision cadence remains healthy.
 
-**Next:** Finish builds, publish/deploy compatible pair and mandatory reset;
-verify eligibility-driven progression and diagnose Melidoran's remaining giver route and unavailable objective
-destinations. Continue TASK-011
+**Alternate-route follow-up (deployed):** Nearest spawn points can lack a
+complete navmesh route while other points of the same source are reachable.
+Command admission now inspects at most eight nearby points per source and
+prefers one with a complete native path; inside-radius points need no route;
+unproven cases fall back to bounded partial movement with diagnostics. No
+teleporting, no per-tick scans. Committed/pushed as `ed556d03`; core built and
+published (`local-alternate-quest-routes`, `7707bf3d…`), workload patched by
+digest, saved pin matches, controller unchanged (`bb00d6c0…`). Mandatory reset
+completed all four rollouts
+(`/tmp/opencode/clean-reset-alternate-quest-routes.log`). Five-minute
+world/native captures running at
+`/tmp/opencode/alternate-routes-live-{world.log,events.jsonl}`; not yet
+verified.
+
+**Next:** Analyze alternate-route capture; verify fewer no-progress runs and
+path-flag outcomes. Continue TASK-011
 group/social and cohort validation. Broader quest-type coverage remains pending.
 
 ### TASK-012 — Remove legacy autonomous AI tree (queued)
