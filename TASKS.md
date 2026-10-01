@@ -382,8 +382,36 @@ image building under `local-solo-quest-navigation`. Earlier observed in this
 window: dead bots handled with Spirit-Healer resurrection navigation (working
 behavior); travel table load confirmed at 6778 ms during world init.
 
-**Next:** Deploy, mandatory reset, verify all solo bots accept quests and
-progress through objectives; then resume TASK-011 validation.
+**Quest fix deployment and observed limits (2026-10-01):** Committed/pushed
+`e61811b7`; core `8c2cf4b9…` and controller `7bab85cd…` are deployed and saved
+values match. Mandatory resets completed with all four rollouts (latest log:
+`/tmp/opencode/clean-reset-turnin-flow.log`). Database inspection at 20:39 found
+100 bot characters: 44 level 1, 38 level 2, 16 level 3, two level 4; seven rewarded
+quests across seven bots. This establishes some quest turn-ins and leveling,
+not cohort-wide autonomous progression. Earlier startup-race and fight-history
+explanations were hypotheses, not separately established live causes.
+
+**Remaining retry storms identified:** A bounded controller capture at
+20:39:05–20:41:11 recorded 32,281 quest-giver navigations, 14,501 turn-in
+navigations, 9,377 turn-in interactions, and repeated accepted-then-rejected
+combat operations on dead bots. Native capture confirmed repeated instant
+arrivals with no position change. On navigation rejection, generic handling
+sets phase `select`; accept-task retry failed to restore `travel`, so subsequent
+arrival never advanced to acceptance. Fixed that transition. Command acceptance
+also cleared failure retries without proving completion; removed that reset.
+Turn-in navigation alone did not identify the eligible nearby receiver: the
+controller repeatedly chose the same rejected NPC. Persist rejected receiver
+GUIDs, skip them, and terminate when candidates are exhausted instead of
+restarting navigation. Four regressions cover retry arrival, accepted/rejected
+failure bounds, receiver rejection after serialization, and exhausted receivers.
+Full race suite (three runs) and vet pass. Controller image building under
+`local-bounded-quest-retries`. Persisted `Logger.playerbots=4,Console Server`
+in saved `files/worldserver.conf`; no blanket configuration apply performed.
+Item-only quest objectives still explicitly block; unsupported acquisition and
+cohort-wide movement/social pacing remain open.
+
+**Next:** Publish/deploy retry fixes, mandatory reset, capture fresh movement and
+quest outcomes; continue TASK-011 validation without claiming universal success.
 
 ### TASK-012 — Remove legacy autonomous AI tree (queued)
 

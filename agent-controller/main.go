@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -390,6 +391,7 @@ type task struct {
 	TargetName                   string          `json:"target_name,omitempty"`
 	TargetGUID                   string          `json:"target_guid,omitempty"`
 	LootTargets                  []string        `json:"loot_targets,omitempty"`
+	RejectedQuestGivers          []string        `json:"rejected_quest_givers,omitempty"`
 	ServiceOperation             string          `json:"service_operation,omitempty"`
 	ServiceArguments             json.RawMessage `json:"service_arguments,omitempty"`
 	CraftSteps                   []craftingStep  `json:"craft_steps,omitempty"`
@@ -1636,6 +1638,7 @@ func (a *actor) advanceAcceptQuestTask(current *task) {
 		return
 	}
 	current.Retries++
+	current.Phase = "travel"
 	current.OperationID = a.sendPrimitive("navigate_to_quest_giver", map[string]any{"quest_id": current.QuestID})
 	current.LastProgressUTC = time.Now().UTC()
 	a.persist()
@@ -2347,7 +2350,7 @@ func (a *actor) advanceQuestTask(current *task) {
 			return
 		}
 		for _, npc := range a.latest.NearbyNPCs {
-			if !npc.QuestGiver || npc.GUID == "" {
+			if !npc.QuestGiver || npc.GUID == "" || slices.Contains(current.RejectedQuestGivers, npc.GUID) {
 				continue
 			}
 			current.Phase = "turnin_interaction"
@@ -2360,6 +2363,10 @@ func (a *actor) advanceQuestTask(current *task) {
 			return
 		}
 		current.Retries++
+		if len(current.RejectedQuestGivers) != 0 {
+			a.finishTask("blocked", "nearby quest givers rejected the completed quest")
+			return
+		}
 		if current.Retries >= 3 {
 			a.finishTask("blocked", "no nearby quest giver after repeated turn-in attempts")
 			return
@@ -2485,11 +2492,12 @@ func (a *actor) handleTaskOperation(incoming event) {
 		return
 	}
 	if result.Status == "accepted" {
+		// Admission is not progress: preserve terminal failure retries until
+		// completion, otherwise accepted-then-rejected operations retry forever.
 		if !result.Persistent {
 			// Compatibility with older cores during a rolling deployment.
 			current.OperationID = ""
 		}
-		current.Retries = 0
 		current.LastProgressUTC = time.Now().UTC()
 		a.persist()
 		if !result.Persistent {
@@ -2510,6 +2518,15 @@ func (a *actor) handleTaskOperation(incoming event) {
 			return
 		}
 		current.Phase = "select"
+		if current.Kind == "quest" && result.Operation == "interact_quest_giver" &&
+			result.Reason == "quest giver or completed quest unavailable" {
+			// Navigation arrival does not identify a nearby NPC as the receiver.
+			// Keep native eligibility validation, but never retry a rejected NPC.
+			if current.TargetGUID != "" && !slices.Contains(current.RejectedQuestGivers, current.TargetGUID) {
+				current.RejectedQuestGivers = append(current.RejectedQuestGivers, current.TargetGUID)
+			}
+			current.Phase = "turnin_giver"
+		}
 		current.LastProgressUTC = time.Now().UTC()
 		a.persist()
 		a.requestSnapshot()

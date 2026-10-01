@@ -123,6 +123,58 @@ func TestAcceptQuestPersistentOperationsRetainOwnership(t *testing.T) {
 	}
 }
 
+func TestAcceptQuestNavigationRetryArrivalAdvancesToAccept(t *testing.T) {
+	a, commands := acceptTestActor(t)
+	a.startAcceptQuestTask(map[string]json.RawMessage{"quest_id": json.RawMessage(`78467`)})
+	nextLoopCommand(t, commands)
+	a.handleTaskOperation(event{Payload: mustJSON(map[string]any{
+		"operation_id": a.state.Task.OperationID, "status": "rejected",
+		"reason": "quest destination unavailable", "persistent": true,
+	})})
+	nextLoopCommand(t, commands) // Request a fresh snapshot after rejection.
+	a.advanceAcceptQuestTask(a.state.Task)
+	if cmd := nextLoopCommand(t, commands); cmd.Operation != "navigate_to_quest_giver" {
+		t.Fatalf("retry operation=%s", cmd.Operation)
+	}
+	if a.state.Task.Phase != "travel" {
+		t.Fatalf("retry phase=%s", a.state.Task.Phase)
+	}
+	a.handleTaskOperation(event{Payload: mustJSON(map[string]any{
+		"operation_id": a.state.Task.OperationID, "status": "completed", "persistent": true,
+	})})
+	if cmd := nextLoopCommand(t, commands); cmd.Operation != "accept_quest" {
+		t.Fatalf("arrival operation=%s", cmd.Operation)
+	}
+	if a.state.Task.Phase != "accept" {
+		t.Fatalf("arrival phase=%s", a.state.Task.Phase)
+	}
+}
+
+func TestAcceptedThenRejectedOperationsRemainBounded(t *testing.T) {
+	a, commands := acceptTestActor(t)
+	a.startAcceptQuestTask(map[string]json.RawMessage{"quest_id": json.RawMessage(`78467`)})
+	nextLoopCommand(t, commands)
+	for attempt := 0; attempt < 3; attempt++ {
+		opID := a.state.Task.OperationID
+		a.handleTaskOperation(event{Payload: mustJSON(map[string]any{
+			"operation_id": opID, "status": "accepted", "persistent": true,
+		})})
+		a.handleTaskOperation(event{Payload: mustJSON(map[string]any{
+			"operation_id": opID, "status": "rejected", "persistent": true,
+			"reason": "bot died or left the operation map",
+		})})
+		if a.state.Task == nil {
+			break
+		}
+		nextLoopCommand(t, commands)
+		a.advanceAcceptQuestTask(a.state.Task)
+		nextLoopCommand(t, commands)
+	}
+	if a.state.Task != nil || a.pendingDecisionReason != "task_blocked" {
+		t.Fatal("accepted commands erased terminal failure retries")
+	}
+}
+
 func TestSnapshotRetainsNearbyPlayerInGroup(t *testing.T) {
 	a := &actor{owner: testPopulationManager(t, 1).owner, botGUID: "bot", online: true, bridgeActive: true}
 	a.handleEvent(event{Type: "snapshot", Payload: json.RawMessage(
