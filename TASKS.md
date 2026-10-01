@@ -458,11 +458,45 @@ at three bounded radii, validate a native path, and require actual displacement
 before reporting completion; legacy per-tick searches keep three attempts.
 Seven regression functions cover sources/slots/search bounds and death recovery.
 Full race tests (three runs), vet, codestyle, formatting, whitespace and reused
-creator lookups pass. Core/controller images building/publishing under
-`local-quest-source-recovery`; deployment/live outcomes remain pending.
+creator lookups pass. Committed/pushed as `7167a85f`; both images built and
+published successfully under `local-quest-source-recovery`: core `13039bba…`,
+controller `96c8b850…`. Workloads patched by digest and saved values match.
+Mandatory reset completed all four rollouts
+(`/tmp/opencode/clean-reset-quest-source-recovery.log`), pruning 126 runtime keys
+and purging the event stream to zero messages. All four affected pods are ready
+with zero restarts; saved image pins match. Native startup confirms quest travel
+table loaded in 8281 ms. Also observed duplicate `guild_member.guid_key` insert
+errors during login; no guild data was deleted or changed, and guild-loop work is
+still deferred. Pre-deploy 45-second sample included six local-search
+path rejections and item objectives in quests 179/789/750/4402/3086/5441/9293.
 
-**Next:** Complete builds, deploy compatible core/controller images, run the
-mandatory clean reset, and verify item acquisition/objective navigation/corpse
+**Completed first live capture:** Native observations span 381.7 seconds, 52
+bots, 41 observed moving. Actual quest-item counts increased on quests 179
+(three wolves/fur bots), 789 (scorpid tails 0→3), and 750 (cougar pelts on two
+bots). Lantander advanced quest 364 from 0→2 kills. Native objective navigation:
+35 arrivals, six destination-unavailable rejections and 22 no-progress stalls.
+Local search: 684 completed displacement-verified segments, four path failures.
+Four quest turn-ins and 16 accepts completed. No `recover_death` operation or
+dead-to-alive transition was observed, so recovery gameplay remains unverified.
+Sources for item quests 400 and 5441 are empty (nonordinary-loot objectives); do
+not claim all item quest types supported. Report:
+`/tmp/opencode/quest-source-recovery-live-report.json`.
+
+**Turn-in follow-up:** Hinbeek's completed quest 183 generated thousands of
+instant navigation arrivals because the capped 12-NPC projection held only mobs,
+omitting the receiver. A successful arrival reset generic retries, so the
+missing-NPC branch retried indefinitely. Added a separate persisted turn-in
+attempt budget and target-less native receiver lookup from the uncapped cached
+nearby NPC list, selecting only `hasInvolvedQuest` candidates. Controller now
+requests this validated lookup after arrival instead of choosing an arbitrary
+displayed NPC or treating projection absence as proof of no receiver. Updated
+two regressions for incomplete projections, serialized failure/arrival budgets.
+Full race suite (three runs), vet, formatting/codestyle/whitespace pass; core and
+controller follow-up builds succeeded and publication is running under
+`local-native-quest-receiver`. Subsequent deployment must run another clean reset.
+
+**Next:** Deploy receiver follow-up, mandatory reset, verify turn-ins and remaining
+navigation stalls; verify item acquisition/objective navigation/corpse
 recovery live; then continue TASK-011 group/social and cohort validation.
 
 ### TASK-012 — Remove legacy autonomous AI tree (queued)

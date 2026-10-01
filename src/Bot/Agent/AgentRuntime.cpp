@@ -2795,9 +2795,30 @@ struct AgentRuntime::Impl
             }
             if (command.operation == "interact_quest_giver")
             {
-                ObjectGuid const giverGuid(GetUInt64(arguments, "target_guid"));
+                ObjectGuid giverGuid(GetUInt64(arguments, "target_guid"));
                 uint32 const questId = GetUInt(arguments, "quest_id");
                 Creature* giver = botAI->GetCreature(giverGuid);
+                if (!giverGuid)
+                {
+                    // The controller's capped NPC projection can omit the receiver.
+                    // Resolve this quest's eligible NPC from the native nearby cache.
+                    GuidVector const nearby = botAI->GetAiObjectContext()->GetValue<GuidVector>("nearest npcs")->Get();
+                    float distance = std::numeric_limits<float>::max();
+                    for (ObjectGuid const guid : nearby)
+                    {
+                        Creature* candidate = botAI->GetCreature(guid);
+                        if (!candidate || !candidate->IsAlive() || !candidate->HasNpcFlag(UNIT_NPC_FLAG_QUESTGIVER) ||
+                            !candidate->hasInvolvedQuest(questId))
+                            continue;
+                        float const candidateDistance = botAI->GetBot()->GetDistance(candidate);
+                        if (candidateDistance < distance)
+                        {
+                            giver = candidate;
+                            giverGuid = guid;
+                            distance = candidateDistance;
+                        }
+                    }
+                }
                 if (!giver || !giver->IsAlive() || !giver->HasNpcFlag(UNIT_NPC_FLAG_QUESTGIVER) ||
                     !giver->hasInvolvedQuest(questId) ||
                     botAI->GetBot()->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE)

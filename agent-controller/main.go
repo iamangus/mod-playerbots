@@ -393,9 +393,9 @@ type task struct {
 	TargetName                   string          `json:"target_name,omitempty"`
 	TargetGUID                   string          `json:"target_guid,omitempty"`
 	LootTargets                  []string        `json:"loot_targets,omitempty"`
-	RejectedQuestGivers          []string        `json:"rejected_quest_givers,omitempty"`
 	ObjectiveItemID              uint32          `json:"objective_item_id,omitempty"`
 	QuestSearchAttempts          uint32          `json:"quest_search_attempts,omitempty"`
+	QuestTurninAttempts          uint32          `json:"quest_turnin_attempts,omitempty"`
 	ServiceOperation             string          `json:"service_operation,omitempty"`
 	ServiceArguments             json.RawMessage `json:"service_arguments,omitempty"`
 	CraftSteps                   []craftingStep  `json:"craft_steps,omitempty"`
@@ -2352,8 +2352,13 @@ func (a *actor) advanceQuestTask(current *task) {
 		// A nearby questgiver NPC is not necessarily this quest's receiver; the
 		// native interaction validates hasInvolvedQuest and would only fail
 		// repeatedly against the wrong NPC. Travel to the actual receiver first,
-		// then interact with whatever receiver is nearby on arrival.
+		// then let native validation select the receiver on arrival.
 		if current.Phase != "turnin_giver" {
+			if current.QuestTurninAttempts >= 3 {
+				a.finishTask("blocked", "quest turn-in made no progress after repeated arrivals")
+				return
+			}
+			current.QuestTurninAttempts++
 			current.Phase = "turnin_travel"
 			current.OperationID = a.sendPrimitive("navigate_to_quest_turnin", map[string]any{
 				"quest_id": current.QuestID,
@@ -2362,30 +2367,11 @@ func (a *actor) advanceQuestTask(current *task) {
 			a.persist()
 			return
 		}
-		for _, npc := range a.latest.NearbyNPCs {
-			if !npc.QuestGiver || npc.GUID == "" || slices.Contains(current.RejectedQuestGivers, npc.GUID) {
-				continue
-			}
-			current.Phase = "turnin_interaction"
-			current.TargetGUID = npc.GUID
-			current.OperationID = a.sendPrimitive("interact_quest_giver", map[string]any{
-				"quest_id": current.QuestID, "target_guid": npc.GUID,
-			})
-			current.LastProgressUTC = time.Now().UTC()
-			a.persist()
-			return
-		}
-		current.Retries++
-		if len(current.RejectedQuestGivers) != 0 {
-			a.finishTask("blocked", "nearby quest givers rejected the completed quest")
-			return
-		}
-		if current.Retries >= 3 {
-			a.finishTask("blocked", "no nearby quest giver after repeated turn-in attempts")
-			return
-		}
-		current.Phase = "turnin_travel"
-		current.OperationID = a.sendPrimitive("navigate_to_quest_turnin", map[string]any{
+		// Native selection uses the uncapped NPC cache and validates this quest's
+		// receiver; the display projection cannot prove that no receiver exists.
+		current.Phase = "turnin_interaction"
+		current.TargetGUID = ""
+		current.OperationID = a.sendPrimitive("interact_quest_giver", map[string]any{
 			"quest_id": current.QuestID,
 		})
 		current.LastProgressUTC = time.Now().UTC()
@@ -2562,11 +2548,8 @@ func (a *actor) handleTaskOperation(incoming event) {
 		current.Phase = "select"
 		if current.Kind == "quest" && result.Operation == "interact_quest_giver" &&
 			result.Reason == "quest giver or completed quest unavailable" {
-			// Navigation arrival does not identify a nearby NPC as the receiver.
-			// Keep native eligibility validation, but never retry a rejected NPC.
-			if current.TargetGUID != "" && !slices.Contains(current.RejectedQuestGivers, current.TargetGUID) {
-				current.RejectedQuestGivers = append(current.RejectedQuestGivers, current.TargetGUID)
-			}
+			// Retry native receiver lookup within the failure budget, not another
+			// successful navigation that would erase failure counts.
 			current.Phase = "turnin_giver"
 		}
 		current.LastProgressUTC = time.Now().UTC()
