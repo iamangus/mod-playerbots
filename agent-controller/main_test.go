@@ -204,6 +204,15 @@ func TestTravelStallRequiresActualPositionProgress(t *testing.T) {
 	}
 }
 
+func TestCombatApproachesDistantTargetsBeforeEngaging(t *testing.T) {
+	if combatStartPhase(50) != "approaching" {
+		t.Fatal("distant target skipped the approach loop")
+	}
+	if combatStartPhase(2) != "combat" || combatStartPhase(combatApproachDistance) != "combat" {
+		t.Fatal("nearby target did not enter combat")
+	}
+}
+
 func TestParsePopulationSnapshotAggregatesCounts(t *testing.T) {
 	payload := json.RawMessage(`{"status":"completed","total":7,"counts":[
 		{"race":1,"class":1,"level_band":0,"count":4},

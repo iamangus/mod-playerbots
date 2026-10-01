@@ -42,6 +42,7 @@ const (
 	travelOperationTimeout  = 30 * time.Minute
 	unavailableGoalCooldown = 5 * time.Minute
 	travelStallTimeout      = 2 * time.Minute
+	combatApproachDistance  = 3.0
 )
 
 type config struct {
@@ -1257,6 +1258,10 @@ func (a *actor) advanceTask() {
 		}
 		return
 	}
+	if current.Phase == "approaching" {
+		a.advanceCombatApproach(current)
+		return
+	}
 	switch current.Kind {
 	case "kill_count":
 		a.advanceKillTask(current)
@@ -1554,9 +1559,14 @@ func (a *actor) advanceKillTask(current *task) {
 		}
 		current.TargetGUID = creature.GUID
 		current.LastTargetHealthPct = creature.HealthPct
-		current.Phase = "combat"
+		current.Phase = combatStartPhase(creature.Distance)
 		current.LastScanUTC = time.Time{}
-		current.OperationID = a.sendPrimitive("engage_target", map[string]any{"target_guid": creature.GUID})
+		current.LastTravelPosition = nil
+		operation := "engage_target"
+		if current.Phase == "approaching" {
+			operation = "approach_target"
+		}
+		current.OperationID = a.sendPrimitive(operation, map[string]any{"target_guid": creature.GUID})
 		current.LastProgressUTC = time.Now().UTC()
 		a.persist()
 		return
@@ -1568,6 +1578,39 @@ func (a *actor) advanceKillTask(current *task) {
 	current.Phase = "scanning"
 	current.OperationID = a.sendPrimitive("move_random", map[string]any{})
 	current.LastProgressUTC = time.Now().UTC()
+	a.persist()
+}
+
+func combatStartPhase(distance float64) string {
+	if distance > combatApproachDistance {
+		return "approaching"
+	}
+	return "combat"
+}
+
+func (a *actor) advanceCombatApproach(current *task) {
+	for _, creature := range a.latest.NearbyCreatures {
+		if creature.GUID != current.TargetGUID {
+			continue
+		}
+		if creature.Distance <= combatApproachDistance {
+			current.Phase = "combat"
+			current.LastTargetHealthPct = creature.HealthPct
+			current.LastProgressUTC = time.Now().UTC()
+			current.OperationID = a.sendPrimitive("engage_target", map[string]any{"target_guid": current.TargetGUID})
+			a.persist()
+			return
+		}
+		if travelStalled(current, a.latest.Bot.Position, time.Now().UTC()) {
+			a.finishTask("blocked", "combat target approach made no positional progress")
+		}
+		return
+	}
+	// The target died or disappeared while we approached; rescan without
+	// crediting a kill that the bot did not observe.
+	current.TargetGUID = ""
+	current.Phase = "select"
+	current.LastTravelPosition = nil
 	a.persist()
 }
 
@@ -1843,12 +1886,17 @@ func (a *actor) advanceQuestTask(current *task) {
 		for _, creature := range a.latest.NearbyCreatures {
 			if creature.Entry == uint32(entry) {
 				current.TargetGUID = creature.GUID
-				current.Phase = "combat"
+				current.Phase = combatStartPhase(creature.Distance)
 				current.ObjectiveIndex = objective.Index
 				current.ObjectiveCount = objective.Count
 				current.Retries = 0
 				current.LastTargetHealthPct = creature.HealthPct
-				current.OperationID = a.sendPrimitive("engage_target", map[string]any{"target_guid": creature.GUID})
+				current.LastTravelPosition = nil
+				operation := "engage_target"
+				if current.Phase == "approaching" {
+					operation = "approach_target"
+				}
+				current.OperationID = a.sendPrimitive(operation, map[string]any{"target_guid": creature.GUID})
 				current.LastProgressUTC = time.Now().UTC()
 				a.persist()
 				return

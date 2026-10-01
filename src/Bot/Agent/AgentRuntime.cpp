@@ -1050,6 +1050,19 @@ struct AgentRuntime::Impl
                               moved ? "accepted" : "rejected", moved ? "movement order accepted" : "movement failed");
                 return;
             }
+            if (command.operation == "approach_target")
+            {
+                ObjectGuid const targetGuid(GetUInt64(arguments, "target_guid"));
+                Unit* target = botAI->GetUnit(targetGuid);
+                bool const valid = target && target->IsInWorld() && target->IsAlive() &&
+                                   botAI->GetBot()->IsValidAttackTarget(target);
+                bool const moved = valid && botAI->DoSpecificAction(
+                    "agent move to target", Event("agent move to target", targetGuid), true);
+                PublishResult(command.requestId, command.operationId, command.operation,
+                              moved ? "accepted" : "rejected",
+                              moved ? "approaching combat target" : "combat target approach unavailable", targetGuid);
+                return;
+            }
             if (command.operation == "engage_target" || command.operation == "loot_target" ||
                 command.operation == "gather_target")
             {
