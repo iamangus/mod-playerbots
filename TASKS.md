@@ -175,11 +175,47 @@ but do not prove ToCloud9 economic correctness.
 Startup account restoration was committed as `a58b8cb7` and its native build
 passed, but was not deployed: the next image must also contain this authority
 guard and first-start-only restoration (to avoid changing account vectors on
-config reload). Formatting/codestyle pass; the combined safe image is pending.
+config reload). The combined safe image compiled and published at
+`sha256:14c9f3ebff979aaaa5e96691b914bf9b732b8f967518c6ce04720a6e89ac2739`;
+its non-overlapping core rollout succeeded. Saved core digest matches. Observed
+five native bot events (three distinct bot identities, fresh owner epochs,
+online/heartbeat) after restart while the controller stayed paused. A read-only
+database check found 36 type-1 accounts and 360 existing bot characters, levels
+1–6; the saved `online` count is not treated as authoritative presence or proof
+of the requested 80-bot cohort.
 
-**Next:** Build/deploy the combined restart/authority safety fixes, verify bot
+**Passive social snapshot finding:** Runtime discarded the command inbox without
+controller ownership, including charserver's read-only reconstruction snapshots.
+Added bounded snapshot-only handling while inactive (eight queued commands per
+tick, one snapshot per bot per five seconds), retaining normal owner/epoch/deadline
+validation and leaving every task/mutation command disabled. Formatting/codestyle
+pass; cached compilation and publication passed at
+`sha256:6731ab7a1df0c6cb9dc02a986c315ef66ebd3a6449534c50ff6317d1c595d2ae`.
+Core rollout completed; saved image digest matches. Observed twenty native
+online/heartbeat events from ten distinct bots, but no reconstruction snapshots
+in that bounded sample. Social-session reconstruction is still unproven; tracing
+charserver request dispatch next. Controller is confirmed at zero replicas.
+
+**Pause-aware chart publication:** Committed scoped ToCloud9 social/chart work as
+`5f2dc6c`, preserving unrelated local Dockerfile/build notes. Published chart-v0.2.5
+through release run `36894939696`; the public Helm index lists version 0.2.5.
+Updated saved Terraform chart pin to 0.2.5. Rendering the published package with
+saved values confirms zero controller replicas. Local charserver race tests/vet,
+chart lint and the paused social/road render regression pass. No blanket Helm/Tofu
+apply was performed, and no LLM requests or state cleanup occurred.
+
+**Service transaction trace:** Existing gateway auction bidding mutates the
+service before a separate native gold-debit RPC. Mail money is removed before a
+gold-credit RPC; attachments are added natively before service removal. These
+crash windows mean a simple socketless wrapper cannot provide safe exactly-once
+effects. The bot handoff needs durable service receipts and idempotent native
+mutation/reconciliation; no human gateway behavior was modified. Details are in
+the local cluster-economy bridge analysis. Economic flows remain blocked.
+
+**Next:** Verify passive social reconstruction
+with no controller/model activity, verify bot
 ownership/login state, implement authoritative ToCloud9 auction/mail handoffs,
-and publish/pin the updated pause-aware chart before resuming the controller.
+before resuming the controller.
 Then perform remaining authorized native/live validation and route-data collection.
 Keep cross-map gathering explicitly unfinished. No task is marked
 complete on controller-only evidence.

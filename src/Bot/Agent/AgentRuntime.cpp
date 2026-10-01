@@ -539,6 +539,7 @@ struct AgentRuntime::Impl
     bool addedTravelStrategy = false;
     bool invitePending = false;
     std::atomic<uint64> tradeRevision{0};
+    uint32 lastPassiveSnapshotMs = 0;
     std::atomic<bool> tradeWindowOpen{false};
     bool tradeMovementSuspended = false;
     WorldPacket invitePacket;
@@ -3228,7 +3229,22 @@ void AgentRuntime::Update(PlayerbotAI* botAI, uint32 elapsed)
 
     if (!m_impl->remoteControlActive.load(std::memory_order_acquire))
     {
-        AgentBridgeTransport::Clear(m_impl->inbox);
+        // Social directory reconstruction must not require model ownership.
+        // Read-only snapshots are bounded; all task/mutation commands stay disabled.
+        for (uint32 processed = 0; processed < 8; ++processed)
+        {
+            AgentBridgeCommand command;
+            if (!AgentBridgeTransport::Pop(m_impl->inbox, command))
+                break;
+            if (command.operation != "snapshot")
+                continue;
+            constexpr uint32 PASSIVE_SNAPSHOT_INTERVAL_MS = 5000;
+            if (m_impl->lastPassiveSnapshotMs &&
+                getMSTimeDiff(m_impl->lastPassiveSnapshotMs, now) < PASSIVE_SNAPSHOT_INTERVAL_MS)
+                continue;
+            m_impl->lastPassiveSnapshotMs = now;
+            m_impl->ExecuteCommand(botAI, command);
+        }
         return;
     }
 
