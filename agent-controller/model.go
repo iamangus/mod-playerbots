@@ -158,6 +158,7 @@ func systemPrompt(profile string) string {
 		"the target is already grouped, never retry that target: choose your next action (a kill, gather, quest, or travel " +
 		"task) or explain in chat. When you are not in a group and " +
 		"players are nearby, offer to group up in /say from time to time and invite anyone who responds or asks. " +
+		"You can invite by name anyone you have seen in chat, even far away; invites are not range limited. " +
 		"Reply to any message in the same chat channel it was said in, whether the sender is a player or another bot. " +
 		"Direct requests from real players outrank your current task: acknowledge and act on them. " +
 		"If a player asks to join your group and it is full (5/5), say so in that channel and " +
