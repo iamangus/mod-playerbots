@@ -99,6 +99,26 @@ func TestAssistLeaderStartsPersistentPrimitive(t *testing.T) {
 	}
 }
 
+func TestGroupedBotAutoAssistsWithoutTask(t *testing.T) {
+	a, commands := loopTestActor(t)
+	a.latest.Bot.GroupSize = 2
+	a.handleEvent(event{Type: "snapshot", Payload: json.RawMessage(`{"schema_version":1,"bot":{"level":2,"group_size":2}}`)})
+	if a.state.Task == nil || a.state.Task.Kind != "assist_leader" {
+		t.Fatal("grouped bot without a task did not start assisting")
+	}
+	if cmd := nextLoopCommand(t, commands); cmd.Operation != "assist_leader" {
+		t.Fatalf("operation=%s", cmd.Operation)
+	}
+	// An explicit task wins over the automatic default.
+	b, _ := loopTestActor(t)
+	b.latest.Bot.GroupSize = 2
+	b.state.Task = &task{Kind: "kill_count", Phase: "combat", OperationID: "op", LastProgressUTC: time.Now()}
+	b.handleEvent(event{Type: "snapshot", Payload: json.RawMessage(`{"schema_version":1,"bot":{"level":2,"group_size":2}}`)})
+	if b.state.Task.Kind != "kill_count" {
+		t.Fatal("automatic assist replaced an explicit task")
+	}
+}
+
 func TestFollowStartsOnePersistentPrimitive(t *testing.T) {
 	a, commands := loopTestActor(t)
 	a.latest.NearbyPlayers = []playerInfo{{GUIDRaw: "1", Name: "Human"}}

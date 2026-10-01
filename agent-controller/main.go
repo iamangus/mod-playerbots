@@ -931,6 +931,11 @@ func (a *actor) handleEvent(incoming event) {
 		// needed for deliberation, not for pacing the lower-level loops.
 		if a.state.Task != nil {
 			a.advanceTask()
+		} else if a.latest.Bot.GroupSize >= 2 {
+			// Group membership is the structural signal: an untasked group
+			// member automatically assists its leader instead of idling until
+			// the next LLM decision.
+			a.startAssistLeaderTask()
 		}
 		if incoming.RequestID != "" && incoming.RequestID == a.pendingSnapshotID {
 			a.pendingSnapshotID = ""
