@@ -832,7 +832,8 @@ func (a *actor) handleEvent(incoming event) {
 	}
 	// Routine observations must not invalidate an in-flight decision. Active task
 	// monitoring requests snapshots faster than some model responses arrive.
-	if incoming.Type != "snapshot" && incoming.Type != "primitive_progress" && incoming.Type != "bot_heartbeat" && incoming.Type != "social_session_ready" {
+	if incoming.Type != "snapshot" && incoming.Type != "primitive_progress" && incoming.Type != "bot_heartbeat" && incoming.Type != "social_session_ready" &&
+		!(incoming.Type == "operation_result" && a.state.Task != nil && eventOperationID(incoming) == a.state.Task.OperationID) {
 		a.revision++
 	}
 	if incoming.OwnerToken != a.state.OwnerToken ||
@@ -926,12 +927,14 @@ func (a *actor) handleEvent(incoming event) {
 			a.requestSnapshot()
 		}
 	case "snapshot":
+		// Every live observation can advance a task. Requested snapshots are
+		// needed for deliberation, not for pacing the lower-level loops.
+		if a.state.Task != nil {
+			a.advanceTask()
+		}
 		if incoming.RequestID != "" && incoming.RequestID == a.pendingSnapshotID {
 			a.pendingSnapshotID = ""
 			a.pendingSnapshotAt = time.Time{}
-			if a.state.Task != nil {
-				a.advanceTask()
-			}
 			if a.online && a.pendingDecisionReason != "" {
 				reason := a.pendingDecisionReason
 				a.pendingDecisionReason = ""
@@ -1208,6 +1211,12 @@ func (a *actor) startGatherTask(args map[string]json.RawMessage) {
 	if profession == "" || count == 0 {
 		return
 	}
+	// Fishing nodes are transient bobber spawns, not snapshot-visible game
+	// objects; a fishing gather loop would only scan forever.
+	if profession == "fishing" {
+		a.rejectTool("gather_resources", "fishing is not supported as a gathering task yet")
+		return
+	}
 	if a.state.Task != nil && a.state.Task.Kind == "gather_resources" &&
 		a.state.Task.Profession == profession && a.state.Task.GoalCount == count {
 		return
@@ -1344,15 +1353,23 @@ func (a *actor) startPlayerNavigationTask(kind string, args map[string]json.RawM
 	if a.state.Task != nil && a.state.Task.Kind == kind && a.state.Task.TargetGUID == targetGUID {
 		return
 	}
-	a.cancelTaskPrimitive()
 	goalDistance := 5.0
 	_ = json.Unmarshal(args["distance"], &goalDistance)
+	if goalDistance < 1 || goalDistance > 50 || math.IsNaN(goalDistance) || math.IsInf(goalDistance, 0) {
+		a.rejectTool(kind, "distance must be between 1 and 50 yards")
+		return
+	}
+	a.cancelTaskPrimitive()
 	current := &task{ID: newID(), Kind: kind, TargetName: targetName, TargetGUID: targetGUID,
 		GoalDistance: goalDistance, Phase: "moving", MapID: a.latest.Bot.MapID,
 		LastProgressUTC: time.Now().UTC()}
 	a.state.Task = current
-	current.OperationID = a.sendPrimitive("navigate_to_player", map[string]any{
-		"player_name": targetName, "target_guid": targetGUID,
+	operation := "navigate_to_player"
+	if kind == "follow_player" {
+		operation = "follow_player"
+	}
+	current.OperationID = a.sendPrimitive(operation, map[string]any{
+		"player_name": targetName, "target_guid": targetGUID, "distance": goalDistance,
 	})
 	a.persist()
 }
@@ -1402,16 +1419,17 @@ func (a *actor) advancePlayerNavigationTask(current *task) {
 			a.finishTask("completed", "arrived at player")
 			return
 		}
-		if current.Kind == "follow_player" && distance <= current.GoalDistance+3.0 {
-			current.LastProgressUTC = time.Now().UTC()
-			return
-		}
 	}
-	if !current.LastProgressUTC.IsZero() && time.Since(current.LastProgressUTC) < rescanInterval {
+	if current.Kind != "follow_player" && !current.LastProgressUTC.IsZero() && time.Since(current.LastProgressUTC) < rescanInterval {
 		return
 	}
-	current.OperationID = a.sendPrimitive("navigate_to_player", map[string]any{
-		"player_name": current.TargetName, "target_guid": current.TargetGUID,
+	operation := "navigate_to_player"
+	if current.Kind == "follow_player" {
+		operation = "follow_player"
+	}
+	current.Phase = "moving"
+	current.OperationID = a.sendPrimitive(operation, map[string]any{
+		"player_name": current.TargetName, "target_guid": current.TargetGUID, "distance": current.GoalDistance,
 	})
 	current.LastProgressUTC = time.Now().UTC()
 	a.persist()
@@ -1665,7 +1683,7 @@ func (a *actor) advanceGatherTask(current *task) {
 		a.finishTask("completed", "resource-node count reached")
 		return
 	}
-	wantedSkill := map[string]uint32{"herbalism": 182, "mining": 186, "fishing": 356}[current.Profession]
+	wantedSkill := map[string]uint32{"herbalism": 182, "mining": 186}[current.Profession]
 	if wantedSkill == 0 {
 		a.finishTask("failed", "unsupported gathering profession")
 		return
@@ -1971,17 +1989,23 @@ func (a *actor) handleTaskOperation(incoming event) {
 		Status      string `json:"status"`
 		Reason      string `json:"reason"`
 		TargetGUID  string `json:"target_guid"`
+		Persistent  bool   `json:"persistent"`
 	}
 	if json.Unmarshal(incoming.Payload, &result) != nil || result.OperationID == "" ||
 		result.OperationID != current.OperationID {
 		return
 	}
 	if result.Status == "accepted" {
-		current.OperationID = ""
+		if !result.Persistent {
+			// Compatibility with older cores during a rolling deployment.
+			current.OperationID = ""
+		}
 		current.Retries = 0
 		current.LastProgressUTC = time.Now().UTC()
 		a.persist()
-		a.requestSnapshot()
+		if !result.Persistent {
+			a.requestSnapshot()
+		}
 		return
 	}
 	current.OperationID = ""
@@ -1989,27 +2013,6 @@ func (a *actor) handleTaskOperation(incoming event) {
 		if current.Kind == "navigate_destination" && result.Reason == "destination unavailable" {
 			a.markDestinationUnavailable(current.DestinationName, current.MapID, time.Now().UTC())
 			a.finishTask("blocked", "destination unavailable; choose a different destination")
-			return
-		}
-		if result.Status == "rejected" && result.Operation == "gather_target" &&
-			current.Kind == "gather_resources" && current.Phase == "gathering" {
-			current.OperationID = ""
-			current.Phase = "gather_verify"
-			current.LastProgressUTC = time.Now().UTC()
-			a.persist()
-			a.requestSnapshot()
-			return
-		}
-		if result.Status == "rejected" && result.Operation == "loot_target" &&
-			(current.Phase == "loot" || current.Phase == "quest_loot") {
-			if current.Kind == "kill_count" {
-				current.Completed++
-			}
-			current.TargetGUID = ""
-			current.Phase = "select"
-			current.LastProgressUTC = time.Now().UTC()
-			a.persist()
-			a.requestSnapshot()
 			return
 		}
 		current.Retries++
@@ -2026,6 +2029,18 @@ func (a *actor) handleTaskOperation(incoming event) {
 	current.Retries = 0
 
 	switch current.Phase {
+	case "approaching":
+		current.Phase = "combat"
+		current.OperationID = a.sendPrimitive("engage_target", map[string]any{"target_guid": current.TargetGUID})
+	case "moving":
+		if current.Kind == "navigate_player" || current.Kind == "navigate_to_player" {
+			a.finishTask("completed", "arrived at player")
+			return
+		}
+		// A follow operation is persistent until cancelled or blocked; it
+		// must not become a one-shot arrival task.
+		a.finishTask("blocked", "follow loop ended unexpectedly")
+		return
 	case "combat":
 		if current.Kind == "quest" {
 			current.Phase = "quest_loot"
@@ -2047,8 +2062,8 @@ func (a *actor) handleTaskOperation(incoming event) {
 					return
 				}
 			}
-			current.Phase = "select"
 		}
+		current.Phase = "select"
 		current.TargetGUID = ""
 		current.LastScanUTC = time.Time{}
 		current.LastProgressUTC = time.Now().UTC()
@@ -2056,12 +2071,9 @@ func (a *actor) handleTaskOperation(incoming event) {
 		a.requestSnapshot()
 		return
 	case "travel":
-		if current.Kind == "quest" {
-			current.Retries++
-			if current.Retries >= 3 {
-				a.finishTask("blocked", "quest objective remained unavailable after repeated travel")
-				return
-			}
+		if current.Kind == "navigate_destination" {
+			a.finishTask("completed", "arrived at destination")
+			return
 		}
 		current.Phase = "select"
 		current.LastProgressUTC = time.Now().UTC()
@@ -2082,6 +2094,7 @@ func (a *actor) handleTaskOperation(incoming event) {
 		return
 	case "scanning":
 		current.Phase = "select"
+		current.LastScanUTC = time.Time{}
 		current.LastProgressUTC = time.Now().UTC()
 		a.persist()
 		a.requestSnapshot()
@@ -2153,6 +2166,7 @@ func (a *actor) finishTask(status, reason string) {
 	a.cancelTaskPrimitive()
 	finished := *a.state.Task
 	a.state.Task = nil
+	a.revision++ // A high-level task change invalidates decisions about its predecessor.
 	a.recent = append(a.recent, recentEvent{Type: "task_result", Payload: mustJSON(map[string]any{
 		"task_id": finished.ID, "kind": finished.Kind, "status": status, "reason": reason,
 		"completed": finished.Completed, "goal": finished.GoalCount,

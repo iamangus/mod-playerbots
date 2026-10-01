@@ -263,8 +263,8 @@ var agentTools = []map[string]any{
 		"count":          map[string]any{"type": "integer"},
 		"radius":         map[string]any{"type": "number"},
 	}, []string{"creature_entry", "count"}),
-	functionTool("gather_resources", "Gather nearby herb, ore, or fishing nodes in a loop.", map[string]any{
-		"profession": map[string]any{"type": "string", "enum": []string{"herbalism", "mining", "fishing"}},
+	functionTool("gather_resources", "Gather nearby herb or ore nodes in a loop.", map[string]any{
+		"profession": map[string]any{"type": "string", "enum": []string{"herbalism", "mining"}},
 		"count":      map[string]any{"type": "integer"},
 		"radius":     map[string]any{"type": "number"},
 	}, []string{"profession", "count"}),

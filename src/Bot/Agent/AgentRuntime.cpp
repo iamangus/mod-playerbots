@@ -8,28 +8,30 @@
 
 namespace boost::property_tree::json_parser::detail
 {
-    using boost::placeholders::_1;
+using boost::placeholders::_1;
 }
 
-#include "AgentRuntime.h"
-
-#include "AgentTradeOperation.h"
-#include "PlayerbotWorldThreadProcessor.h"
 #include "AgentBridgeShared.h"
+#include "AgentRuntime.h"
+#include "AgentTradeOperation.h"
 #include "AiObjectContext.h"
 #include "ChooseTravelTargetAction.h"
 #include "Creature.h"
+#include "Duration.h"
 #include "Event.h"
+#include "EventMap.h"
 #include "GameObject.h"
 #include "Group.h"
 #include "Item.h"
 #include "LootObjectStack.h"
+#include "MotionMaster.h"
 #include "MovementActions.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
 #include "QuestDef.h"
 #include "SharedDefines.h"
@@ -39,13 +41,12 @@ namespace boost::property_tree::json_parser::detail
 #if defined(PLAYERBOTS_WITH_TOCLOUD9_SIDECAR)
 #include "libsidecar.h"
 #endif
-#include "boost/property_tree/json_parser.hpp"
-#include "boost/property_tree/ptree.hpp"
-#include <array>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <deque>
 #include <limits>
@@ -54,6 +55,9 @@ namespace boost::property_tree::json_parser::detail
 #include <sstream>
 #include <utility>
 #include <vector>
+
+#include "boost/property_tree/json_parser.hpp"
+#include "boost/property_tree/ptree.hpp"
 
 namespace
 {
@@ -68,6 +72,10 @@ constexpr uint32 AGENT_MAX_SNAPSHOT_GAMEOBJECTS = 12;
 constexpr uint32 AGENT_MAX_SNAPSHOT_PLAYERS = 12;
 constexpr uint32 AGENT_MAX_SNAPSHOT_ITEMS = 40;
 constexpr uint32 AGENT_EVENT_SHARD_COUNT = 256;
+constexpr uint32 AGENT_OPERATION_TICK_MS = 250;
+constexpr uint32 AGENT_OPERATION_EVENT = 1;
+constexpr uint32 AGENT_OPERATION_PROGRESS_MS = 5000;
+constexpr uint32 AGENT_OPERATION_STALL_MS = 120000;
 
 struct AgentBridgeCommand
 {
@@ -194,8 +202,8 @@ public:
 #endif
     }
 
-    static bool Publish(std::string const& subjectPrefix, std::string const& ownerToken,
-                        ObjectGuid botGuid, std::string const& event)
+    static bool Publish(std::string const& subjectPrefix, std::string const& ownerToken, ObjectGuid botGuid,
+                        std::string const& event)
     {
 #if defined(PLAYERBOTS_WITH_TOCLOUD9_SIDECAR)
         std::string const subject = EventSubject(subjectPrefix, ownerToken, botGuid);
@@ -247,12 +255,10 @@ private:
         return prefix + ".commands." + ownerToken;
     }
 
-    static std::string EventSubject(std::string const& prefix, std::string const& ownerToken,
-                                    ObjectGuid botGuid)
+    static std::string EventSubject(std::string const& prefix, std::string const& ownerToken, ObjectGuid botGuid)
     {
         std::string const botToken = BotToken(botGuid);
-        return prefix + ".events." + std::to_string(EventShard(botToken)) + "." +
-               ownerToken + "." + botToken;
+        return prefix + ".events." + std::to_string(EventShard(botToken)) + "." + ownerToken + "." + botToken;
     }
 
 #if defined(PLAYERBOTS_WITH_TOCLOUD9_SIDECAR)
@@ -314,18 +320,14 @@ private:
 #endif
 };
 
-std::string EscapeJson(std::string const& value)
-{
-    return agent_bridge::EscapeJson(value);
-}
+std::string EscapeJson(std::string const& value) { return agent_bridge::EscapeJson(value); }
 
 std::string TruncateUtf8(std::string value, size_t maxBytes)
 {
     return agent_bridge::TruncateUtf8(std::move(value), maxBytes);
 }
 
-std::string GetString(boost::property_tree::ptree const& tree, std::string const& key,
-                      std::string const& fallback = "")
+std::string GetString(boost::property_tree::ptree const& tree, std::string const& key, std::string const& fallback = "")
 {
     return tree.get<std::string>(key, fallback);
 }
@@ -404,26 +406,45 @@ TravelDestination* FindQuestDestination(Player* bot, uint32 questId, uint32 obje
 }
 
 std::string SerializeEvent(std::string const& type, ObjectGuid botGuid, std::string const& ownerToken,
-                           std::string const& ownerEpoch, uint64 eventSequence,
-                           std::string const& requestId, std::string const& payload)
+                           std::string const& ownerEpoch, uint64 eventSequence, std::string const& requestId,
+                           std::string const& payload)
 {
     std::string const botToken = AgentBridgeTransport::BotToken(botGuid);
-    int64 const eventTime = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
+    int64 const eventTime =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count();
     std::ostringstream event;
     event << "{\"version\":1,\"event_id\":\"" << EscapeJson(botToken + "-" + std::to_string(eventSequence))
-          << "\",\"timestamp_unix_ms\":" << eventTime << ",\"type\":\"" << EscapeJson(type)
-          << "\",\"bot_guid\":\""
-          << EscapeJson(botToken) << "\",\"owner_token\":\""
-          << EscapeJson(ownerToken) << "\",\"owner_epoch\":\"" << EscapeJson(ownerEpoch)
-          << "\",\"request_id\":\"" << EscapeJson(requestId)
+          << "\",\"timestamp_unix_ms\":" << eventTime << ",\"type\":\"" << EscapeJson(type) << "\",\"bot_guid\":\""
+          << EscapeJson(botToken) << "\",\"owner_token\":\"" << EscapeJson(ownerToken) << "\",\"owner_epoch\":\""
+          << EscapeJson(ownerEpoch) << "\",\"request_id\":\"" << EscapeJson(requestId)
           << "\",\"payload\":" << (payload.empty() ? "{}" : payload) << "}";
     return event.str();
 }
-}
+}  // namespace
 
 struct AgentRuntime::Impl
 {
+    struct LocalOperation
+    {
+        AgentBridgeCommand command;
+        ObjectGuid target;
+        uint32 mapId = 0;
+        uint32 questId = 0;
+        float distance = 2.0f;
+        bool attempted = false;
+        bool movementStarted = false;
+        bool paused = false;
+        uint32 lastProgressMs = 0;
+        uint32 lastReportMs = 0;
+        uint32 lastInteractionMs = 0;
+        uint32 lastMoveAttemptMs = 0;
+        uint32 health = 0;
+        Position position;
+    };
+
+    std::unique_ptr<LocalOperation> localOperation;
+    EventMap operationEvents;
     ObjectGuid botGuid;
     std::string botGuidToken;
     uint32 eventShard = 0;
@@ -459,12 +480,15 @@ struct AgentRuntime::Impl
     std::map<std::string, std::string> resultCache;
     std::deque<std::string> resultCacheOrder;
 
-    explicit Impl(ObjectGuid guid) : botGuid(guid), botGuidToken(AgentBridgeTransport::BotToken(guid)),
-                                     eventShard(AgentBridgeTransport::EventShard(botGuidToken)),
-                                     ownerEpoch(std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                         std::chrono::system_clock::now().time_since_epoch()).count())),
-                                     ownerToken(AgentBridgeTransport::OwnerToken()),
-                                     subjectPrefix(sPlayerbotAIConfig.agentBridgeSubjectPrefix)
+    explicit Impl(ObjectGuid guid)
+        : botGuid(guid),
+          botGuidToken(AgentBridgeTransport::BotToken(guid)),
+          eventShard(AgentBridgeTransport::EventShard(botGuidToken)),
+          ownerEpoch(std::to_string(
+              std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                  .count())),
+          ownerToken(AgentBridgeTransport::OwnerToken()),
+          subjectPrefix(sPlayerbotAIConfig.agentBridgeSubjectPrefix)
     {
         AgentBridgeTransport::Register(botGuidToken, inbox);
     }
@@ -509,15 +533,15 @@ struct AgentRuntime::Impl
         hasPendingEvents.store(!pendingEvents.empty(), std::memory_order_release);
     }
 
-    void PublishResult(std::string const& requestId, std::string const& operationId,
-                       std::string const& operation, std::string const& status, std::string const& reason,
-                       ObjectGuid resultTarget = ObjectGuid::Empty)
+    void PublishResult(std::string const& requestId, std::string const& operationId, std::string const& operation,
+                       std::string const& status, std::string const& reason,
+                       ObjectGuid resultTarget = ObjectGuid::Empty, bool persistent = false)
     {
         std::ostringstream payload;
-        payload << "{\"operation_id\":\"" << EscapeJson(operationId) << "\",\"operation\":\""
-                << EscapeJson(operation) << "\",\"status\":\"" << EscapeJson(status)
-                << "\",\"reason\":\"" << EscapeJson(reason) << "\",\"target_guid\":\""
-                << EscapeJson(std::to_string(resultTarget.GetRawValue())) << "\"}";
+        payload << "{\"operation_id\":\"" << EscapeJson(operationId) << "\",\"operation\":\"" << EscapeJson(operation)
+                << "\",\"status\":\"" << EscapeJson(status) << "\",\"reason\":\"" << EscapeJson(reason)
+                << "\",\"target_guid\":\"" << EscapeJson(std::to_string(resultTarget.GetRawValue()))
+                << "\",\"persistent\":" << (persistent ? "true" : "false") << "}";
         std::string const payloadJson = payload.str();
         if (!requestId.empty())
         {
@@ -536,8 +560,8 @@ struct AgentRuntime::Impl
     void SuppressAutonomousStrategies(PlayerbotAI* botAI)
     {
         static std::array<std::string, 17> const strategies = {
-            "new rpg", "rpg", "travel", "move random", "follow", "grind", "quest", "gather", "pvp",
-            "duel", "start duel", "lfg", "chat", "emote", "loot", "group", "guild"};
+            "new rpg", "rpg",        "travel", "move random", "follow", "grind", "quest", "gather", "pvp",
+            "duel",    "start duel", "lfg",    "chat",        "emote",  "loot",  "group", "guild"};
         std::string changes;
         for (std::string const& strategy : strategies)
         {
@@ -592,8 +616,7 @@ struct AgentRuntime::Impl
         TravelTarget* target = botAI->GetAiObjectContext()->GetValue<TravelTarget*>("travel target")->Get();
         if (target)
         {
-            target->setTarget(TravelMgr::instance().nullTravelDestination,
-                              TravelMgr::instance().nullWorldPosition);
+            target->setTarget(TravelMgr::instance().nullTravelDestination, TravelMgr::instance().nullWorldPosition);
             target->setForced(false);
         }
         if (addedTravelStrategy && botAI->HasStrategy("travel", BOT_STATE_NON_COMBAT))
@@ -605,23 +628,23 @@ struct AgentRuntime::Impl
     {
         Player* bot = botAI->GetBot();
         std::ostringstream result;
-        result << "{\"schema_version\":1,\"bot\":{\"guid\":\""
-               << EscapeJson(AgentBridgeTransport::BotToken(botGuid)) << "\",\"name\":\""
-               << EscapeJson(bot->GetName()) << "\",\"class_id\":" << static_cast<uint32>(bot->getClass())
-               << ",\"race_id\":" << static_cast<uint32>(bot->getRace()) << ",\"team_id\":"
-               << static_cast<uint32>(bot->GetTeamId()) << ",\"level\":" << static_cast<uint32>(bot->GetLevel())
+        result << "{\"schema_version\":1,\"bot\":{\"guid\":\"" << EscapeJson(AgentBridgeTransport::BotToken(botGuid))
+               << "\",\"name\":\"" << EscapeJson(bot->GetName())
+               << "\",\"class_id\":" << static_cast<uint32>(bot->getClass())
+               << ",\"race_id\":" << static_cast<uint32>(bot->getRace())
+               << ",\"team_id\":" << static_cast<uint32>(bot->GetTeamId())
+               << ",\"level\":" << static_cast<uint32>(bot->GetLevel())
                << ",\"health_pct\":" << (bot->GetMaxHealth() ? bot->GetHealth() * 100 / bot->GetMaxHealth() : 0)
                << ",\"alive\":" << (bot->IsAlive() ? "true" : "false")
                << ",\"moving\":" << (bot->isMoving() ? "true" : "false")
                << ",\"can_move\":" << (botAI->CanMove() ? "true" : "false")
                << ",\"experience\":" << bot->GetUInt32Value(PLAYER_XP)
-               << ",\"in_combat\":" << (bot->IsInCombat() ? "true" : "false") << ",\"map_id\":"
-               << bot->GetMapId() << ",\"zone_id\":" << bot->GetZoneId() << ",\"position\":["
-               << bot->GetPositionX() << "," << bot->GetPositionY() << "," << bot->GetPositionZ() << "]";
+               << ",\"in_combat\":" << (bot->IsInCombat() ? "true" : "false") << ",\"map_id\":" << bot->GetMapId()
+               << ",\"zone_id\":" << bot->GetZoneId() << ",\"position\":[" << bot->GetPositionX() << ","
+               << bot->GetPositionY() << "," << bot->GetPositionZ() << "]";
 
         Group* group = bot->GetGroup();
-        result << ",\"group_size\":" << (group ? group->GetMembersCount() : 1)
-               << ",\"group_leader_guid\":\""
+        result << ",\"group_size\":" << (group ? group->GetMembersCount() : 1) << ",\"group_leader_guid\":\""
                << EscapeJson(group ? AgentBridgeTransport::BotToken(group->GetLeaderGUID()) : "")
                << "\",\"pending_group_invite\":" << (bot->GetGroupInvite() ? "true" : "false")
                << ",\"group_members\":[";
@@ -637,9 +660,9 @@ struct AgentRuntime::Impl
                     result << ",";
                 firstMember = false;
                 result << "{\"guid\":\"" << EscapeJson(AgentBridgeTransport::BotToken(member->GetGUID()))
-                       << "\",\"name\":\"" << EscapeJson(member->GetName()) << "\",\"level\":"
-                       << static_cast<uint32>(member->GetLevel()) << ",\"is_bot\":"
-                       << (GET_PLAYERBOT_AI(member) ? "true" : "false") << "}";
+                       << "\",\"name\":\"" << EscapeJson(member->GetName())
+                       << "\",\"level\":" << static_cast<uint32>(member->GetLevel())
+                       << ",\"is_bot\":" << (GET_PLAYERBOT_AI(member) ? "true" : "false") << "}";
             }
         }
         Unit* currentTarget = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
@@ -651,11 +674,10 @@ struct AgentRuntime::Impl
             LootObject currentLoot(bot, currentTarget->GetGUID());
             result << "{\"guid\":\"" << EscapeJson(std::to_string(currentTarget->GetGUID().GetRawValue()))
                    << "\",\"entry\":" << currentTarget->GetEntry() << ",\"name\":\""
-                   << EscapeJson(currentTarget->GetName()) << "\",\"alive\":"
-                   << (currentTarget->IsAlive() ? "true" : "false") << ",\"health_pct\":"
-                   << (currentTarget->GetMaxHealth()
-                           ? currentTarget->GetHealth() * 100 / currentTarget->GetMaxHealth()
-                           : 0)
+                   << EscapeJson(currentTarget->GetName())
+                   << "\",\"alive\":" << (currentTarget->IsAlive() ? "true" : "false") << ",\"health_pct\":"
+                   << (currentTarget->GetMaxHealth() ? currentTarget->GetHealth() * 100 / currentTarget->GetMaxHealth()
+                                                     : 0)
                    << ",\"loot_possible\":" << (currentLoot.IsLootPossible(bot) ? "true" : "false") << "}";
         }
         else
@@ -668,15 +690,13 @@ struct AgentRuntime::Impl
         {
             WorldPosition* targetPosition = travelTarget->getPosition();
             WorldPosition botPosition(bot);
-            result << ",\"travel_target\":{\"destination_name\":\""
-                   << EscapeJson(destination->getName()) << "\",\"is_traveling\":"
-                   << (travelTarget->isTraveling() ? "true" : "false") << ",\"is_working\":"
-                   << (travelTarget->isWorking() ? "true" : "false")
+            result << ",\"travel_target\":{\"destination_name\":\"" << EscapeJson(destination->getName())
+                   << "\",\"is_traveling\":" << (travelTarget->isTraveling() ? "true" : "false")
+                   << ",\"is_working\":" << (travelTarget->isWorking() ? "true" : "false")
                    << ",\"arrived\":" << (destination->isIn(&botPosition) ? "true" : "false");
             if (targetPosition)
-                result << ",\"position\":[" << targetPosition->GetPositionX() << ","
-                       << targetPosition->GetPositionY() << "," << targetPosition->GetPositionZ()
-                       << "],\"map_id\":" << targetPosition->GetMapId();
+                result << ",\"position\":[" << targetPosition->GetPositionX() << "," << targetPosition->GetPositionY()
+                       << "," << targetPosition->GetPositionZ() << "],\"map_id\":" << targetPosition->GetMapId();
             result << "}";
         }
         else
@@ -712,9 +732,9 @@ struct AgentRuntime::Impl
                 if (!firstStack)
                     result << ",";
                 firstStack = false;
-                result << "{\"item_guid\":\"" << item->GetGUID().GetRawValue() << "\",\"item_id\":"
-                       << item->GetEntry() << ",\"count\":" << item->GetCount() << ",\"name\":\""
-                       << EscapeJson(item->GetTemplate()->Name1) << "\"}";
+                result << "{\"item_guid\":\"" << item->GetGUID().GetRawValue() << "\",\"item_id\":" << item->GetEntry()
+                       << ",\"count\":" << item->GetCount() << ",\"name\":\"" << EscapeJson(item->GetTemplate()->Name1)
+                       << "\"}";
                 if (++stackCount >= AGENT_MAX_SNAPSHOT_ITEMS)
                     break;
             }
@@ -731,8 +751,7 @@ struct AgentRuntime::Impl
             auto writeOffer = [&](char const* name, TradeData* offer)
             {
                 result << ",\"" << name << "\":{\"money_copper\":" << (offer ? offer->GetMoney() : 0)
-                       << ",\"accepted\":" << (offer && offer->IsAccepted() ? "true" : "false")
-                       << ",\"items\":[";
+                       << ",\"accepted\":" << (offer && offer->IsAccepted() ? "true" : "false") << ",\"items\":[";
                 bool first = true;
                 if (offer)
                     for (uint8 slot = 0; slot < TRADE_SLOT_TRADED_COUNT; ++slot)
@@ -741,9 +760,9 @@ struct AgentRuntime::Impl
                             if (!first)
                                 result << ",";
                             first = false;
-                            result << "{\"slot\":" << static_cast<uint32>(slot)
-                                   << ",\"item_id\":" << item->GetEntry() << ",\"count\":" << item->GetCount()
-                                   << ",\"name\":\"" << EscapeJson(item->GetTemplate()->Name1) << "\"}";
+                            result << "{\"slot\":" << static_cast<uint32>(slot) << ",\"item_id\":" << item->GetEntry()
+                                   << ",\"count\":" << item->GetCount() << ",\"name\":\""
+                                   << EscapeJson(item->GetTemplate()->Name1) << "\"}";
                         }
                 result << "]}";
             };
@@ -766,12 +785,11 @@ struct AgentRuntime::Impl
             if (!first)
                 result << ",";
             first = false;
-            result << "{\"quest_id\":" << questId << ",\"title\":\""
-                   << EscapeJson(quest->GetTitle()) << "\",\"status\":"
-                   << static_cast<uint32>(status.Status) << ",\"status_name\":\""
+            result << "{\"quest_id\":" << questId << ",\"title\":\"" << EscapeJson(quest->GetTitle())
+                   << "\",\"status\":" << static_cast<uint32>(status.Status) << ",\"status_name\":\""
                    << (status.Status == QUEST_STATUS_COMPLETE ? "complete" : "incomplete")
-                   << "\",\"type\":" << quest->GetType() << ",\"suggested_players\":"
-                   << quest->GetSuggestedPlayers() << ",\"objectives\":[";
+                   << "\",\"type\":" << quest->GetType() << ",\"suggested_players\":" << quest->GetSuggestedPlayers()
+                   << ",\"objectives\":[";
             bool firstObjective = true;
             for (uint32 index = 0; index < QUEST_OBJECTIVES_COUNT; ++index)
             {
@@ -781,8 +799,8 @@ struct AgentRuntime::Impl
                     result << ",";
                 firstObjective = false;
                 result << "{\"index\":" << index << ",\"entry\":" << quest->RequiredNpcOrGo[index]
-                       << ",\"count\":" << status.CreatureOrGOCount[index] << ",\"required\":"
-                       << quest->RequiredNpcOrGoCount[index] << "}";
+                       << ",\"count\":" << status.CreatureOrGOCount[index]
+                       << ",\"required\":" << quest->RequiredNpcOrGoCount[index] << "}";
             }
             for (uint32 index = 0; index < QUEST_ITEM_OBJECTIVES_COUNT; ++index)
             {
@@ -791,8 +809,8 @@ struct AgentRuntime::Impl
                 if (!firstObjective)
                     result << ",";
                 firstObjective = false;
-                result << "{\"item_id\":" << quest->RequiredItemId[index] << ",\"count\":"
-                       << status.ItemCount[index] << ",\"required\":" << quest->RequiredItemCount[index] << "}";
+                result << "{\"item_id\":" << quest->RequiredItemId[index] << ",\"count\":" << status.ItemCount[index]
+                       << ",\"required\":" << quest->RequiredItemCount[index] << "}";
             }
             result << "]}";
         }
@@ -809,14 +827,11 @@ struct AgentRuntime::Impl
                 result << ",";
             firstCreature = false;
             result << "{\"guid\":\"" << EscapeJson(std::to_string(guid.GetRawValue()))
-                   << "\",\"entry\":" << creature->GetEntry() << ",\"name\":\""
-                   << EscapeJson(creature->GetName()) << "\",\"health_pct\":"
-                   << (creature->GetMaxHealth()
-                           ? creature->GetHealth() * 100 / creature->GetMaxHealth()
-                           : 0)
-                   << ",\"distance\":" << bot->GetDistance(creature)
-                   << ",\"position\":[" << creature->GetPositionX() << "," << creature->GetPositionY()
-                   << "," << creature->GetPositionZ() << "]}";
+                   << "\",\"entry\":" << creature->GetEntry() << ",\"name\":\"" << EscapeJson(creature->GetName())
+                   << "\",\"health_pct\":"
+                   << (creature->GetMaxHealth() ? creature->GetHealth() * 100 / creature->GetMaxHealth() : 0)
+                   << ",\"distance\":" << bot->GetDistance(creature) << ",\"position\":[" << creature->GetPositionX()
+                   << "," << creature->GetPositionY() << "," << creature->GetPositionZ() << "]}";
             if (++creatureCount >= AGENT_MAX_SNAPSHOT_CREATURES)
                 break;
         }
@@ -834,12 +849,11 @@ struct AgentRuntime::Impl
                 result << ",";
             firstObject = false;
             result << "{\"guid\":\"" << EscapeJson(std::to_string(guid.GetRawValue()))
-                   << "\",\"entry\":" << object->GetEntry() << ",\"name\":\""
-                   << EscapeJson(object->GetName()) << "\",\"gather_skill\":" << loot.skillId
+                   << "\",\"entry\":" << object->GetEntry() << ",\"name\":\"" << EscapeJson(object->GetName())
+                   << "\",\"gather_skill\":" << loot.skillId
                    << ",\"can_gather\":" << (loot.IsLootPossible(bot) ? "true" : "false")
-                   << ",\"distance\":" << bot->GetDistance(object) << ",\"position\":["
-                   << object->GetPositionX() << "," << object->GetPositionY() << ","
-                   << object->GetPositionZ() << "]}";
+                   << ",\"distance\":" << bot->GetDistance(object) << ",\"position\":[" << object->GetPositionX() << ","
+                   << object->GetPositionY() << "," << object->GetPositionZ() << "]}";
             if (++objectCount >= AGENT_MAX_SNAPSHOT_GAMEOBJECTS)
                 break;
         }
@@ -855,14 +869,12 @@ struct AgentRuntime::Impl
             if (!firstPlayer)
                 result << ",";
             firstPlayer = false;
-            result << "{\"guid\":\"" << EscapeJson(std::to_string(guid.GetRawValue()))
-                   << "\",\"guid_raw\":\"" << EscapeJson(std::to_string(guid.GetRawValue()))
-                   << "\",\"name\":\"" << EscapeJson(player->GetName()) << "\",\"level\":"
-                   << static_cast<uint32>(player->GetLevel()) << ",\"distance\":" << bot->GetDistance(player)
-                   << ",\"map_id\":" << player->GetMapId() << ",\"position\":["
-                   << player->GetPositionX() << "," << player->GetPositionY() << ","
-                   << player->GetPositionZ() << "],\"is_bot\":"
-                   << (GET_PLAYERBOT_AI(player) ? "true" : "false") << "}";
+            result << "{\"guid\":\"" << EscapeJson(std::to_string(guid.GetRawValue())) << "\",\"guid_raw\":\""
+                   << EscapeJson(std::to_string(guid.GetRawValue())) << "\",\"name\":\""
+                   << EscapeJson(player->GetName()) << "\",\"level\":" << static_cast<uint32>(player->GetLevel())
+                   << ",\"distance\":" << bot->GetDistance(player) << ",\"map_id\":" << player->GetMapId()
+                   << ",\"position\":[" << player->GetPositionX() << "," << player->GetPositionY() << ","
+                   << player->GetPositionZ() << "],\"is_bot\":" << (GET_PLAYERBOT_AI(player) ? "true" : "false") << "}";
             if (++playerCount >= AGENT_MAX_SNAPSHOT_PLAYERS)
                 break;
         }
@@ -879,10 +891,9 @@ struct AgentRuntime::Impl
                 result << ",";
             firstNpc = false;
             result << "{\"guid\":\"" << EscapeJson(std::to_string(guid.GetRawValue()))
-                   << "\",\"entry\":" << creature->GetEntry() << ",\"name\":\""
-                   << EscapeJson(creature->GetName()) << "\",\"npc_flags\":" << creature->GetNpcFlags()
-                   << ",\"quest_giver\":"
-                   << (creature->HasNpcFlag(UNIT_NPC_FLAG_QUESTGIVER) ? "true" : "false")
+                   << "\",\"entry\":" << creature->GetEntry() << ",\"name\":\"" << EscapeJson(creature->GetName())
+                   << "\",\"npc_flags\":" << creature->GetNpcFlags()
+                   << ",\"quest_giver\":" << (creature->HasNpcFlag(UNIT_NPC_FLAG_QUESTGIVER) ? "true" : "false")
                    << ",\"distance\":" << bot->GetDistance(creature) << "}";
             if (++npcCount >= AGENT_MAX_SNAPSHOT_PLAYERS)
                 break;
@@ -896,17 +907,261 @@ struct AgentRuntime::Impl
         Publish("snapshot", command.requestId, BuildSnapshot(botAI));
     }
 
+    void ClearOperation(PlayerbotAI* botAI)
+    {
+        localOperation.reset();
+        operationEvents.Reset();
+        ClearTravelTarget(botAI);
+        if (!botAI->GetBot()->IsInCombat())
+        {
+            botAI->GetBot()->GetMotionMaster()->Clear();
+            botAI->GetBot()->StopMoving();
+        }
+    }
+
+    void StartOperation(PlayerbotAI* botAI, AgentBridgeCommand const& command, ObjectGuid target = ObjectGuid::Empty,
+                        float distance = 2.0f, uint32 questId = 0)
+    {
+        // Task replacement sends cancel before start. Clear the old local owner
+        // here as well, so redelivery cannot leave competing movement loops.
+        localOperation = std::make_unique<LocalOperation>();
+        localOperation->command = command;
+        localOperation->target = target;
+        localOperation->mapId = botAI->GetBot()->GetMapId();
+        localOperation->distance = distance;
+        localOperation->questId = questId;
+        localOperation->position.Relocate(botAI->GetBot());
+        localOperation->lastProgressMs = getMSTime();
+        operationEvents.Reset();
+        operationEvents.ScheduleEvent(AGENT_OPERATION_EVENT, Milliseconds(1));
+        PublishResult(command.requestId, command.operationId, command.operation, "accepted", "local loop started",
+                      target, true);
+    }
+
+    void FinishOperation(PlayerbotAI* botAI, bool success, std::string const& reason)
+    {
+        AgentBridgeCommand const command = localOperation->command;
+        ObjectGuid const target = localOperation->target;
+        ClearOperation(botAI);
+        PublishResult(command.requestId, command.operationId, command.operation, success ? "completed" : "rejected",
+                      reason, target, true);
+        // Terminal events drive task transitions; the LLM timer does not pace them.
+        Publish("snapshot", "", BuildSnapshot(botAI));
+    }
+
+    void UpdateOperation(PlayerbotAI* botAI, uint32 elapsed)
+    {
+        if (!localOperation)
+            return;
+        operationEvents.Update(elapsed);
+        if (!operationEvents.ExecuteEvent())
+            return;
+        operationEvents.ScheduleEvent(AGENT_OPERATION_EVENT, Milliseconds(AGENT_OPERATION_TICK_MS));
+        Player* bot = botAI->GetBot();
+        LocalOperation& loop = *localOperation;
+        std::string const& operation = loop.command.operation;
+        uint32 const now = getMSTime();
+        bool const combat = operation == "engage_target";
+        bool const follow = operation == "follow_player";
+        bool const travelOperation = operation == "navigate_to_destination" ||
+                                     operation == "navigate_to_quest_objective" ||
+                                     operation == "navigate_to_quest_turnin";
+        if (!bot->IsAlive() || (!travelOperation && bot->GetMapId() != loop.mapId))
+        {
+            FinishOperation(botAI, false, "bot died or left the operation map");
+            return;
+        }
+        if (bot->GetTradeData() || (bot->IsInCombat() && !combat))
+        {
+            if (!loop.paused && !bot->IsInCombat())
+            {
+                bot->GetMotionMaster()->Clear();
+                bot->StopMoving();
+            }
+            loop.paused = true;
+            loop.movementStarted = false;
+            loop.lastProgressMs = now;
+            return;
+        }
+        loop.paused = false;
+        if (!botAI->CanMove() || bot->IsNonMeleeSpellCast(false))
+            return;
+        if (loop.position.GetExactDist(bot) >= 1.0f)
+        {
+            loop.position.Relocate(bot);
+            loop.lastProgressMs = now;
+        }
+        if (!follow && getMSTimeDiff(loop.lastProgressMs, now) >= AGENT_OPERATION_STALL_MS)
+        {
+            FinishOperation(botAI, false, "local operation made no progress");
+            return;
+        }
+        if (getMSTimeDiff(loop.lastReportMs, now) >= AGENT_OPERATION_PROGRESS_MS)
+        {
+            loop.lastReportMs = now;
+            Publish("primitive_progress", "",
+                    "{\"operation_id\":\"" + EscapeJson(loop.command.operationId) +
+                        "\",\"snapshot\":" + BuildSnapshot(botAI) + "}");
+        }
+
+        if (operation == "navigate_to_destination" || operation == "navigate_to_quest_objective" ||
+            operation == "navigate_to_quest_turnin")
+        {
+            TravelTarget* travel = botAI->GetAiObjectContext()->GetValue<TravelTarget*>("travel target")->Get();
+            if (!travel || travel->getDestination() == TravelMgr::instance().nullTravelDestination)
+                FinishOperation(botAI, false, "travel target unavailable");
+            else if (!travel->isTraveling())
+            {
+                WorldPosition position(bot);
+                bool const arrived = travel->isWorking() || travel->getDestination()->isIn(&position);
+                FinishOperation(botAI, arrived, arrived ? "arrived" : "travel ended before arrival");
+            }
+            return;
+        }
+        if (operation == "move_random")
+        {
+            if (loop.movementStarted && !bot->isMoving())
+                FinishOperation(botAI, true, "search segment reached");
+            return;
+        }
+
+        WorldObject* target = loop.target.IsGameObject() ? static_cast<WorldObject*>(botAI->GetGameObject(loop.target))
+                                                         : static_cast<WorldObject*>(botAI->GetUnit(loop.target));
+        if (!target || !target->IsInWorld() || target->GetMap() != bot->GetMap() ||
+            (target->ToUnit() && target->ToUnit()->IsDuringRemoveFromWorld()))
+        {
+            FinishOperation(botAI, loop.attempted && (operation == "loot_target" || operation == "gather_target"),
+                            "operation target disappeared");
+            return;
+        }
+        if (combat)
+        {
+            Unit* unit = target->ToUnit();
+            if (!unit || !unit->IsAlive())
+            {
+                FinishOperation(botAI, true, "combat target defeated");
+                return;
+            }
+            if (!bot->IsValidAttackTarget(unit))
+            {
+                FinishOperation(botAI, false, "combat target no longer attackable");
+                return;
+            }
+            if (loop.health != unit->GetHealth())
+            {
+                loop.health = unit->GetHealth();
+                loop.lastProgressMs = now;
+            }
+            if (!loop.attempted || (!bot->IsInCombat() && !bot->GetVictim()))
+                loop.attempted =
+                    botAI->DoSpecificAction("agent attack target", Event("agent attack target", loop.target), true);
+            return;
+        }
+        if (Unit* unit = target->ToUnit();
+            unit && !unit->IsAlive() && (operation == "approach_target" || operation == "navigate_to_player" || follow))
+        {
+            FinishOperation(botAI, false, "movement target died");
+            return;
+        }
+        if (bot->GetDistance(target) > loop.distance)
+        {
+            if (!loop.movementStarted ||
+                (!bot->isMoving() && bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE))
+            {
+                // Path searches are expensive; retry at most once per second.
+                if (!loop.lastMoveAttemptMs || getMSTimeDiff(loop.lastMoveAttemptMs, now) >= 1000)
+                {
+                    loop.lastMoveAttemptMs = now;
+                    AgentMoveToTargetAction movement(botAI);
+                    loop.movementStarted = movement.MoveToTarget(target, loop.distance);
+                }
+            }
+            return;
+        }
+        if (follow)
+        {
+            loop.lastProgressMs = now;
+            if (!loop.movementStarted)
+            {
+                if (!loop.lastMoveAttemptMs || getMSTimeDiff(loop.lastMoveAttemptMs, now) >= 1000)
+                {
+                    loop.lastMoveAttemptMs = now;
+                    AgentMoveToTargetAction movement(botAI);
+                    loop.movementStarted = movement.MoveToTarget(target, loop.distance);
+                }
+            }
+            return;
+        }
+        if (operation == "approach_target" || operation == "navigate_to_player")
+        {
+            FinishOperation(botAI, true, "arrived at target");
+            return;
+        }
+
+        if (bot->isMoving())
+        {
+            bot->GetMotionMaster()->Clear();
+            bot->StopMoving();
+            loop.movementStarted = false;
+            return;
+        }
+        if (operation == "loot_target" || operation == "gather_target")
+        {
+            LootObject loot(bot, loop.target);
+            if (!loot.IsLootPossible(bot))
+            {
+                FinishOperation(botAI, loop.attempted,
+                                loop.attempted ? "loot or gather completed" : "loot unavailable");
+                return;
+            }
+            if (getMSTimeDiff(loop.lastInteractionMs, now) < 1000)
+                return;
+            loop.lastInteractionMs = now;
+            botAI->GetAiObjectContext()->GetValue<LootObject>("loot target")->Set(loot);
+            if (botAI->DoSpecificAction("open loot", Event("open loot"), true))
+                loop.attempted = true;
+            return;
+        }
+        if (operation == "use_gameobject")
+        {
+            GameObject* object = target->ToGameObject();
+            if (!object || !object->isSpawned())
+                FinishOperation(botAI, false, "game object unavailable");
+            else
+            {
+                object->Use(bot);
+                FinishOperation(botAI, true, "game object interaction performed");
+            }
+            return;
+        }
+        if (operation == "interact_quest_giver")
+        {
+            if (bot->GetQuestStatus(loop.questId) == QUEST_STATUS_REWARDED)
+            {
+                FinishOperation(botAI, true, "quest rewarded");
+                return;
+            }
+            if (getMSTimeDiff(loop.lastInteractionMs, now) < 1000)
+                return;
+            loop.lastInteractionMs = now;
+            WorldPacket packet(CMSG_QUESTGIVER_COMPLETE_QUEST);
+            packet << loop.target;
+            loop.attempted = botAI->DoSpecificAction("talk to quest giver", Event("talk to quest giver", packet), true);
+        }
+    }
+
     void ExecuteCommand(PlayerbotAI* botAI, AgentBridgeCommand const& command)
     {
         if (command.botGuid != botGuidToken)
             return;
-        int64 const nowUnixMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count();
+        int64 const nowUnixMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
         if (command.ownerToken != ownerToken || command.ownerEpoch != ownerEpoch ||
             (command.deadlineUnixMs > 0 && command.deadlineUnixMs < nowUnixMs))
         {
-            PublishResult(command.requestId, command.operationId, command.operation,
-                          "rejected", "stale owner epoch or expired command");
+            PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                          "stale owner epoch or expired command");
             return;
         }
         if (command.arguments.size() > AGENT_MAX_COMMAND_BYTES)
@@ -981,36 +1236,39 @@ struct AgentRuntime::Impl
             {
                 if (botAI->GetBot()->IsInCombat() || !botAI->CanMove())
                 {
-                    PublishResult(command.requestId, command.operationId, command.operation,
-                                  "rejected", "bot is in combat or movement is restricted");
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "bot is in combat or movement is restricted");
                     return;
                 }
                 // Explicit search commands must not inherit the legacy RPG-target usefulness gate.
                 MoveRandomAction search(botAI);
                 bool const moved = search.Execute(Event());
-                PublishResult(command.requestId, command.operationId, command.operation,
-                              moved ? "completed" : "rejected",
-                              moved ? "local search movement started" :
-                                  (botAI->GetBot()->isMoving() ? "bot is already moving" : "local search path unavailable"));
+                if (moved)
+                {
+                    StartOperation(botAI, command);
+                    localOperation->movementStarted = true;
+                }
+                else
+                    PublishResult(
+                        command.requestId, command.operationId, command.operation, "rejected",
+                        botAI->GetBot()->isMoving() ? "bot is already moving" : "local search path unavailable");
                 return;
             }
             if (command.operation == "cancel")
             {
-                ClearTravelTarget(botAI);
-                if (!botAI->GetBot()->IsInCombat())
-                    botAI->GetBot()->StopMoving();
-                PublishResult(command.requestId, command.operationId, command.operation,
-                              "completed", "cancel processed");
+                ClearOperation(botAI);
+                PublishResult(command.requestId, command.operationId, command.operation, "completed",
+                              "cancel processed");
                 return;
             }
             if (command.operation == "invite_to_group")
             {
                 Player* target = ObjectAccessor::FindPlayerByName(GetString(arguments, "player_name"));
-                bool const invited = target && target != botAI->GetBot() &&
-                    botAI->DoSpecificAction("agent invite to group",
-                        Event("agent invite to group", "", target), true);
+                bool const invited =
+                    target && target != botAI->GetBot() &&
+                    botAI->DoSpecificAction("agent invite to group", Event("agent invite to group", "", target), true);
                 PublishResult(command.requestId, command.operationId, command.operation,
-                    invited ? "completed" : "rejected", invited ? "invite sent" : "player unavailable");
+                              invited ? "completed" : "rejected", invited ? "invite sent" : "player unavailable");
                 return;
             }
             if (command.operation == "accept_group_invite")
@@ -1020,14 +1278,14 @@ struct AgentRuntime::Impl
                     std::lock_guard<std::mutex> lock(inviteMutex);
                     if (!invitePending)
                     {
-                        PublishResult(command.requestId, command.operationId, command.operation,
-                                      "rejected", "no invitation pending");
+                        PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                      "no invitation pending");
                         return;
                     }
                     invite = invitePacket;
                 }
-                bool const accepted = botAI->DoSpecificAction(
-                    "accept invitation", Event("accept invitation", invite), true);
+                bool const accepted =
+                    botAI->DoSpecificAction("accept invitation", Event("accept invitation", invite), true);
                 if (accepted)
                 {
                     std::lock_guard<std::mutex> lock(inviteMutex);
@@ -1044,8 +1302,8 @@ struct AgentRuntime::Impl
                 Group* invitedGroup = botAI->GetBot()->GetGroupInvite();
                 if (!invitedGroup)
                 {
-                    PublishResult(command.requestId, command.operationId, command.operation,
-                                  "rejected", "no invitation pending");
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "no invitation pending");
                     return;
                 }
                 if (Player* inviter = ObjectAccessor::FindPlayer(invitedGroup->GetLeaderGUID()))
@@ -1060,7 +1318,8 @@ struct AgentRuntime::Impl
                     invitePending = false;
                     invitePacket = WorldPacket();
                 }
-                PublishResult(command.requestId, command.operationId, command.operation, "completed", "invite declined");
+                PublishResult(command.requestId, command.operationId, command.operation, "completed",
+                              "invite declined");
                 return;
             }
             if (command.operation == "interact_quest_giver")
@@ -1069,61 +1328,61 @@ struct AgentRuntime::Impl
                 uint32 const questId = GetUInt(arguments, "quest_id");
                 Creature* giver = botAI->GetCreature(giverGuid);
                 if (!giver || !giver->IsAlive() || !giver->HasNpcFlag(UNIT_NPC_FLAG_QUESTGIVER) ||
+                    !giver->hasInvolvedQuest(questId) ||
                     botAI->GetBot()->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE)
                 {
-                    PublishResult(command.requestId, command.operationId, command.operation,
-                                  "rejected", "quest giver or completed quest unavailable");
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "quest giver or completed quest unavailable");
                     return;
                 }
-                WorldPacket packet(CMSG_QUESTGIVER_COMPLETE_QUEST);
-                packet << giverGuid;
-                bool const completed = botAI->DoSpecificAction(
-                    "talk to quest giver", Event("talk to quest giver", packet), true);
-                PublishResult(command.requestId, command.operationId, command.operation,
-                    completed ? "completed" : "rejected",
-                    completed ? "quest turn-in attempted" : "turn-in failed", giverGuid);
+                StartOperation(botAI, command, giverGuid, 2.0f, questId);
                 return;
             }
             if (command.operation == "use_gameobject")
             {
                 ObjectGuid const objectGuid(GetUInt64(arguments, "target_guid"));
                 GameObject* object = botAI->GetGameObject(objectGuid);
-                bool const usable = object && object->isSpawned() && object->GetMapId() == botAI->GetBot()->GetMapId() &&
-                    botAI->GetBot()->IsWithinDist(object, sPlayerbotAIConfig.sightDistance);
+                bool const usable = object && object->isSpawned() &&
+                                    object->GetMapId() == botAI->GetBot()->GetMapId() &&
+                                    botAI->GetBot()->IsWithinDist(object, sPlayerbotAIConfig.sightDistance);
                 if (usable)
-                    object->Use(botAI->GetBot());
-                PublishResult(command.requestId, command.operationId, command.operation,
-                    usable ? "completed" : "rejected", usable ? "game object used" : "object unavailable", objectGuid);
+                    StartOperation(botAI, command, objectGuid);
+                else
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "object unavailable", objectGuid);
                 return;
             }
             if (command.operation == "navigate_to_destination")
             {
                 std::string const name = GetString(arguments, "destination");
-                TravelDestination* destination = ChooseTravelTargetAction::FindDestination(
-                    botAI->GetBot(), name, true, true, true, true, true);
+                TravelDestination* destination =
+                    ChooseTravelTargetAction::FindDestination(botAI->GetBot(), name, true, true, true, true, true);
                 WorldPosition position(botAI->GetBot());
-                std::vector<WorldPosition*> points = destination ? destination->nextPoint(&position, true) :
-                                                              std::vector<WorldPosition*>();
+                std::vector<WorldPosition*> points =
+                    destination ? destination->nextPoint(&position, true) : std::vector<WorldPosition*>();
                 bool const started = !points.empty() && SetTravelTarget(botAI, destination, points.front());
-                PublishResult(command.requestId, command.operationId, command.operation,
-                              started ? "accepted" : "rejected",
-                              started ? "navigation order accepted" : "destination unavailable");
+                if (started)
+                    StartOperation(botAI, command);
+                else
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "destination unavailable");
                 return;
             }
-            if (command.operation == "navigate_to_quest_objective" ||
-                command.operation == "navigate_to_quest_turnin")
+            if (command.operation == "navigate_to_quest_objective" || command.operation == "navigate_to_quest_turnin")
             {
                 uint32 const questId = GetUInt(arguments, "quest_id");
                 uint32 const objectiveIndex = GetUInt(arguments, "objective_index");
-                TravelDestination* destination = FindQuestDestination(botAI->GetBot(), questId,
-                    objectiveIndex, command.operation == "navigate_to_quest_turnin");
+                TravelDestination* destination = FindQuestDestination(botAI->GetBot(), questId, objectiveIndex,
+                                                                      command.operation == "navigate_to_quest_turnin");
                 WorldPosition position(botAI->GetBot());
-                std::vector<WorldPosition*> points = destination ? destination->nextPoint(&position, true) :
-                                                              std::vector<WorldPosition*>();
+                std::vector<WorldPosition*> points =
+                    destination ? destination->nextPoint(&position, true) : std::vector<WorldPosition*>();
                 bool const started = !points.empty() && SetTravelTarget(botAI, destination, points.front());
-                PublishResult(command.requestId, command.operationId, command.operation,
-                              started ? "accepted" : "rejected",
-                              started ? "quest navigation order accepted" : "quest destination unavailable");
+                if (started)
+                    StartOperation(botAI, command);
+                else
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "quest destination unavailable");
                 return;
             }
             if (command.operation == "navigate_to_player" || command.operation == "follow_player")
@@ -1136,27 +1395,31 @@ struct AgentRuntime::Impl
                     target = ObjectAccessor::FindPlayerByName(GetString(arguments, "player_name"));
                 if (!target || target == botAI->GetBot() || target->GetMapId() != botAI->GetBot()->GetMapId())
                 {
-                    PublishResult(command.requestId, command.operationId, command.operation,
-                                  "rejected", "player unavailable or on another map");
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "player unavailable or on another map");
                     return;
                 }
-                bool const moved = botAI->DoSpecificAction(
-                    "agent move to target", Event("agent move to target", target->GetGUID()), true);
-                PublishResult(command.requestId, command.operationId, command.operation,
-                              moved ? "accepted" : "rejected", moved ? "movement order accepted" : "movement failed");
+                float const distance = arguments.get<float>("distance", 5.0f);
+                if (!std::isfinite(distance) || distance < 1.0f || distance > 50.0f)
+                {
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "invalid movement distance");
+                    return;
+                }
+                StartOperation(botAI, command, target->GetGUID(), distance);
                 return;
             }
             if (command.operation == "approach_target")
             {
                 ObjectGuid const targetGuid(GetUInt64(arguments, "target_guid"));
                 Unit* target = botAI->GetUnit(targetGuid);
-                bool const valid = target && target->IsInWorld() && target->IsAlive() &&
-                                   botAI->GetBot()->IsValidAttackTarget(target);
-                bool const moved = valid && botAI->DoSpecificAction(
-                    "agent move to target", Event("agent approach target", targetGuid), true);
-                PublishResult(command.requestId, command.operationId, command.operation,
-                              moved ? "accepted" : "rejected",
-                              moved ? "approaching combat target" : "combat target approach unavailable", targetGuid);
+                bool const valid =
+                    target && target->IsInWorld() && target->IsAlive() && botAI->GetBot()->IsValidAttackTarget(target);
+                if (valid)
+                    StartOperation(botAI, command, targetGuid);
+                else
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "combat target approach unavailable", targetGuid);
                 return;
             }
             if (command.operation == "engage_target" || command.operation == "loot_target" ||
@@ -1165,8 +1428,8 @@ struct AgentRuntime::Impl
                 ObjectGuid const requestedTarget(GetUInt64(arguments, "target_guid"));
                 if (!requestedTarget)
                 {
-                    PublishResult(command.requestId, command.operationId, command.operation,
-                                  "rejected", "invalid target GUID");
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "invalid target GUID");
                     return;
                 }
                 if (command.operation == "engage_target")
@@ -1175,48 +1438,44 @@ struct AgentRuntime::Impl
                     if (!target || !target->IsInWorld() || !target->IsAlive() ||
                         !botAI->GetBot()->IsValidAttackTarget(target))
                     {
-                        PublishResult(command.requestId, command.operationId, command.operation,
-                                      "rejected", "target is not attackable");
+                        PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                      "target is not attackable");
                         return;
                     }
-                    if (!botAI->DoSpecificAction("agent attack target",
-                                                  Event("agent attack target", target->GetGUID()), true))
-                    {
-                        PublishResult(command.requestId, command.operationId, command.operation,
-                                      "rejected", "combat action rejected target", target->GetGUID());
-                        return;
-                    }
-                    PublishResult(command.requestId, command.operationId, command.operation, "accepted", "combat started");
+                    StartOperation(botAI, command, requestedTarget);
                     return;
                 }
 
                 LootObject loot(botAI->GetBot(), requestedTarget);
                 if (!loot.IsLootPossible(botAI->GetBot()))
                 {
-                    PublishResult(command.requestId, command.operationId, command.operation,
-                                  "rejected", "target is not available to loot or gather");
+                    Unit* corpse = botAI->GetUnit(requestedTarget);
+                    if (command.operation == "loot_target" && corpse && !corpse->IsAlive() &&
+                        !corpse->HasFlag(UNIT_DYNAMIC_FLAGS, UNIT_DYNFLAG_LOOTABLE))
+                    {
+                        PublishResult(command.requestId, command.operationId, command.operation, "completed",
+                                      "corpse has no remaining loot", requestedTarget, true);
+                        return;
+                    }
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "target is not available to loot or gather");
                     return;
                 }
-                botAI->GetAiObjectContext()->GetValue<LootObjectStack*>("available loot")->Get()->Add(
-                    requestedTarget);
-                botAI->DoSpecificAction("open loot", Event("open loot"), true);
-                PublishResult(command.requestId, command.operationId, command.operation, "accepted",
-                              "interaction order accepted", requestedTarget);
+                botAI->GetAiObjectContext()->GetValue<LootObjectStack*>("available loot")->Get()->Add(requestedTarget);
+                StartOperation(botAI, command, requestedTarget);
                 return;
             }
 
-            PublishResult(command.requestId, command.operationId, command.operation,
-                          "rejected", "unsupported operation");
+            PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                          "unsupported operation");
         }
         catch (std::exception const& exception)
         {
-            PublishResult(command.requestId, command.operationId, command.operation,
-                          "rejected", exception.what());
+            PublishResult(command.requestId, command.operationId, command.operation, "rejected", exception.what());
         }
     }
 
-    void SendChat(PlayerbotAI* botAI, boost::property_tree::ptree const& arguments,
-                  AgentBridgeCommand const& command)
+    void SendChat(PlayerbotAI* botAI, boost::property_tree::ptree const& arguments, AgentBridgeCommand const& command)
     {
         std::string message = GetString(arguments, "message");
         std::string const channel = GetString(arguments, "channel", "say");
@@ -1256,12 +1515,11 @@ struct AgentRuntime::Impl
         if (sent)
             Publish("chat_sent", command.requestId,
                     "{\"channel\":\"" + EscapeJson(channel) + "\",\"recipient\":\"" +
-                        EscapeJson(GetString(arguments, "recipient")) + "\",\"message\":\"" +
-                        EscapeJson(message) + "\"}");
-        PublishResult(command.requestId, command.operationId, command.operation,
-                      sent ? "completed" : "rejected", sent ? "chat sent" : "channel unavailable");
+                        EscapeJson(GetString(arguments, "recipient")) + "\",\"message\":\"" + EscapeJson(message) +
+                        "\"}");
+        PublishResult(command.requestId, command.operationId, command.operation, sent ? "completed" : "rejected",
+                      sent ? "chat sent" : "channel unavailable");
     }
-
 };
 
 AgentRuntime::AgentRuntime(ObjectGuid botGuid) : m_impl(std::make_unique<Impl>(botGuid))
@@ -1306,16 +1564,13 @@ bool AgentRuntime::IsEnabled(PlayerbotAI* botAI) const
            AgentBridgeTransport::ControllerRecent(m_impl->ownerToken, m_impl->eventShard);
 }
 
-bool AgentRuntime::IsSendingChat() const
-{
-    return m_impl->sendingAgentChat;
-}
+bool AgentRuntime::IsSendingChat() const { return m_impl->sendingAgentChat; }
 
 void AgentRuntime::Stop(PlayerbotAI* botAI)
 {
     if (!botAI || !botAI->GetBot() || m_impl->stopped)
         return;
-    m_impl->ClearTravelTarget(botAI);
+    m_impl->ClearOperation(botAI);
     if (!botAI->GetBot()->IsInCombat())
         botAI->GetBot()->StopMoving();
     if (m_impl->remoteControlActive.load(std::memory_order_acquire))
@@ -1328,18 +1583,16 @@ void AgentRuntime::Stop(PlayerbotAI* botAI)
 }
 
 void AgentRuntime::OnChatMessage(PlayerbotAI* botAI, uint8 type, uint32 language, ObjectGuid sender,
-                                 std::string const& senderName, std::string const& channel,
-                                 std::string const& message)
+                                 std::string const& senderName, std::string const& channel, std::string const& message)
 {
     if (!IsConfigured(botAI) || m_impl->stopped)
         return;
 
     std::ostringstream payload;
-    payload << "{\"channel_type\":" << static_cast<uint32>(type) << ",\"chat_type\":\""
-            << ChatTypeName(type) << "\",\"language\":" << language
-            << ",\"channel\":\"" << EscapeJson(channel) << "\",\"sender_guid\":\""
-            << EscapeJson(AgentBridgeTransport::BotToken(sender)) << "\",\"sender_name\":\""
-            << EscapeJson(senderName) << "\",\"message\":\"" << EscapeJson(message) << "\"}";
+    payload << "{\"channel_type\":" << static_cast<uint32>(type) << ",\"chat_type\":\"" << ChatTypeName(type)
+            << "\",\"language\":" << language << ",\"channel\":\"" << EscapeJson(channel) << "\",\"sender_guid\":\""
+            << EscapeJson(AgentBridgeTransport::BotToken(sender)) << "\",\"sender_name\":\"" << EscapeJson(senderName)
+            << "\",\"message\":\"" << EscapeJson(message) << "\"}";
     m_impl->Publish("chat_received", "", payload.str());
 }
 
@@ -1358,8 +1611,9 @@ void AgentRuntime::OnGroupInvite(PlayerbotAI* botAI, WorldPacket const& packet)
         m_impl->invitePacket = packet;
         m_impl->invitePending = true;
     }
-    m_impl->Publish("group_invite_received", "", "{\"inviter_name\":\"" + EscapeJson(inviterName) +
-                     "\",\"invite_type\":" + std::to_string(inviteType) + "}");
+    m_impl->Publish(
+        "group_invite_received", "",
+        "{\"inviter_name\":\"" + EscapeJson(inviterName) + "\",\"invite_type\":" + std::to_string(inviteType) + "}");
 }
 
 void AgentRuntime::OnQuestProgress(PlayerbotAI* botAI, uint32 opcode)
@@ -1423,7 +1677,6 @@ void AgentRuntime::OnTradeStatus(PlayerbotAI* botAI, WorldPacket const& packet)
 
 void AgentRuntime::Update(PlayerbotAI* botAI, uint32 elapsed)
 {
-    (void)elapsed;
     if (!IsConfigured(botAI) || !botAI->GetBot()->IsInWorld())
         return;
 
@@ -1434,8 +1687,7 @@ void AgentRuntime::Update(PlayerbotAI* botAI, uint32 elapsed)
     if (!m_impl->transportReady && getMSTimeDiff(m_impl->lastSubscribeCheckMs, now) >= 5000)
     {
         m_impl->lastSubscribeCheckMs = now;
-        m_impl->transportReady = AgentBridgeTransport::EnsureSubscribed(m_impl->subjectPrefix,
-                                                                        m_impl->ownerToken);
+        m_impl->transportReady = AgentBridgeTransport::EnsureSubscribed(m_impl->subjectPrefix, m_impl->ownerToken);
     }
     if (!m_impl->transportReady)
         return;
@@ -1443,8 +1695,9 @@ void AgentRuntime::Update(PlayerbotAI* botAI, uint32 elapsed)
     if (!m_impl->initialized)
     {
         m_impl->initialized = true;
-        m_impl->Publish("bot_online", "", "{\"map_id\":" + std::to_string(bot->GetMapId()) +
-                        ",\"zone_id\":" + std::to_string(bot->GetZoneId()) + "}");
+        m_impl->Publish("bot_online", "",
+                        "{\"map_id\":" + std::to_string(bot->GetMapId()) +
+                            ",\"zone_id\":" + std::to_string(bot->GetZoneId()) + "}");
     }
 
     Group* group = bot->GetGroup();
@@ -1467,8 +1720,9 @@ void AgentRuntime::Update(PlayerbotAI* botAI, uint32 elapsed)
                 m_impl->suppressedLegacyStrategies.push_back("follow");
             botAI->ChangeStrategy("-follow", BOT_STATE_NON_COMBAT);
         }
-        m_impl->Publish("group_changed", "", "{\"members\":" + std::to_string(groupMembers) +
-                        ",\"leader_guid\":\"" + EscapeJson(AgentBridgeTransport::BotToken(leader)) + "\"}");
+        m_impl->Publish("group_changed", "",
+                        "{\"members\":" + std::to_string(groupMembers) + ",\"leader_guid\":\"" +
+                            EscapeJson(AgentBridgeTransport::BotToken(leader)) + "\"}");
     }
     if (!m_impl->locationInitialized)
     {
@@ -1480,17 +1734,18 @@ void AgentRuntime::Update(PlayerbotAI* botAI, uint32 elapsed)
     {
         m_impl->lastMapId = bot->GetMapId();
         m_impl->lastZoneId = bot->GetZoneId();
-        m_impl->Publish("location_changed", "", "{\"map_id\":" + std::to_string(bot->GetMapId()) +
-                        ",\"zone_id\":" + std::to_string(bot->GetZoneId()) + "}");
+        m_impl->Publish("location_changed", "",
+                        "{\"map_id\":" + std::to_string(bot->GetMapId()) +
+                            ",\"zone_id\":" + std::to_string(bot->GetZoneId()) + "}");
     }
 
     if (!m_impl->lastHeartbeatMs || getMSTimeDiff(m_impl->lastHeartbeatMs, now) >= AGENT_HEARTBEAT_MS)
     {
         m_impl->lastHeartbeatMs = now;
-        m_impl->Publish("bot_heartbeat", "", "{\"map_id\":" + std::to_string(bot->GetMapId()) +
-                        ",\"zone_id\":" + std::to_string(bot->GetZoneId()) +
-                        ",\"bridge_active\":" +
-                        (m_impl->remoteControlActive.load(std::memory_order_acquire) ? "true" : "false") + "}");
+        m_impl->Publish("bot_heartbeat", "",
+                        "{\"map_id\":" + std::to_string(bot->GetMapId()) +
+                            ",\"zone_id\":" + std::to_string(bot->GetZoneId()) + ",\"bridge_active\":" +
+                            (m_impl->remoteControlActive.load(std::memory_order_acquire) ? "true" : "false") + "}");
     }
 
     bool const controllerAvailable = AgentBridgeTransport::ControllerRecent(m_impl->ownerToken, m_impl->eventShard);
@@ -1503,7 +1758,7 @@ void AgentRuntime::Update(PlayerbotAI* botAI, uint32 elapsed)
     }
     else if (!controllerAvailable && remoteControlActive)
     {
-        m_impl->ClearTravelTarget(botAI);
+        m_impl->ClearOperation(botAI);
         if (!bot->IsInCombat())
             bot->StopMoving();
         m_impl->RestoreAutonomousStrategies(botAI);
@@ -1528,11 +1783,14 @@ void AgentRuntime::Update(PlayerbotAI* botAI, uint32 elapsed)
     {
         if (!m_impl->tradeMovementSuspended)
         {
-            m_impl->ClearTravelTarget(botAI);
+            // Suspend physical movement, but keep the task/operation to resume.
+            bot->GetMotionMaster()->Clear();
             bot->StopMoving();
             m_impl->tradeMovementSuspended = true;
         }
     }
     else
         m_impl->tradeMovementSuspended = false;
+
+    m_impl->UpdateOperation(botAI, elapsed);
 }

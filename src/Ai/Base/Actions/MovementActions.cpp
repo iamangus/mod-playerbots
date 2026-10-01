@@ -40,16 +40,29 @@
 bool AgentMoveToTargetAction::Execute(Event event)
 {
     Unit* target = botAI->GetUnit(event.getObject());
-    if (!target || !target->IsInWorld() || target->IsDuringRemoveFromWorld() || target->GetMapId() != bot->GetMapId())
-        return false;
-
     constexpr float COMBAT_APPROACH_DISTANCE = 2.0f;
     float const distance =
         event.GetSource() == "agent approach target" ? COMBAT_APPROACH_DISTANCE : sPlayerbotAIConfig.followDistance;
+    return MoveToTarget(target, distance);
+}
+
+bool AgentMoveToTargetAction::MoveToTarget(WorldObject* target, float distance)
+{
+    if (!target || !target->IsInWorld() || target->GetMap() != bot->GetMap() ||
+        !IsMovingAllowed(target))
+        return false;
+
+    UpdateMovementState();
+    if (Unit* unit = target->ToUnit(); unit && unit->IsAlive())
+    {
+        if (unit->IsDuringRemoveFromWorld())
+            return false;
+        // This native generator tracks the live target on every map update.
+        bot->GetMotionMaster()->MoveFollow(unit, distance, static_cast<float>(M_PI));
+        return true;
+    }
     if (bot->GetDistance(target) <= distance)
         return true;
-
-    // The explicit agent primitive does not depend on a legacy follow formation.
     return MoveNear(target, distance);
 }
 #include <iomanip>

@@ -287,6 +287,11 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         bot->GetSession()->IsLoggingOut() || bot->IsDuringRemoveFromWorld())
         return;
 
+    // Local task primitives must tick even while the strategy engine is waiting
+    // for a movement/casting reaction delay. They do not invoke the LLM.
+    if (agentRuntime)
+        agentRuntime->Update(this, elapsed);
+
     // Bots send no movement opcodes, so m_lastFallZ stays frozen and Player::IsFalling() (a Z test
     // against it) blocks LFG teleports. Unit::IsFalling() is the flag test, so real falls keep theirs.
     if (!bot->Unit::IsFalling())
@@ -595,9 +600,6 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     botOutgoingPacketHandlers.Handle(helper);
     masterIncomingPacketHandlers.Handle(helper);
     masterOutgoingPacketHandlers.Handle(helper);
-
-    if (agentRuntime)
-        agentRuntime->Update(this, elapsed);
 
     DoNextAction(minimal);
 

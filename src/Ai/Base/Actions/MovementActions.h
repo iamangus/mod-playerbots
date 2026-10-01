@@ -7,10 +7,11 @@
 #ifndef PLAYERBOTS_MOVEMENTACTIONS_H
 #define PLAYERBOTS_MOVEMENTACTIONS_H
 
+#include <cmath>
+
 #include "Action.h"
 #include "LastMovementValue.h"
 #include "PlayerbotAIConfig.h"
-#include <cmath>
 
 class Player;
 class PlayerbotAI;
@@ -88,14 +89,13 @@ class AgentMoveToTargetAction : public MovementAction
 public:
     AgentMoveToTargetAction(PlayerbotAI* botAI) : MovementAction(botAI, "agent move to target") {}
     bool Execute(Event event) override;
+    bool MoveToTarget(WorldObject* target, float distance);
 };
 
 class FleeAction : public MovementAction
 {
 public:
-    FleeAction(PlayerbotAI* botAI) : MovementAction(botAI, "flee")
-    {
-    }
+    FleeAction(PlayerbotAI* botAI) : MovementAction(botAI, "flee") {}
 
     bool Execute(Event event) override;
     bool isUseful() override;
