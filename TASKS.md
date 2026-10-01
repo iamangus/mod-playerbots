@@ -555,12 +555,47 @@ object budget, reset only by observed objective count gains or objective change.
 This also bounds successful object interactions that produce no quest progress.
 Four regressions cover eligibility, repeated rejection, serialized no-progress
 attempts and budget reset on actual progress; full race suite (three runs), vet
-and whitespace pass. Controller-only build is running under
-`local-quest-object-bounds`; not deployed. This bounds failure, not proof that
-every quest-object mechanic is supported.
+and whitespace pass. Controller-only build/publication succeeded under
+`local-quest-object-bounds` (`80992abe…`), committed/pushed as `2a7d0871`.
+Workload patched by digest and saved image pin matches. Mandatory reset completed
+all four rollouts (`/tmp/opencode/clean-reset-quest-object-bounds.log`); all affected
+pods ready with zero restarts and expected images. Completed native capture spans
+226.2 seconds at `/tmp/opencode/quest-object-bounds-live-events.jsonl`: 42 bots
+sampled, 39 observed moving, 107 objective arrivals, 16 giver arrivals, 18 turn-in
+arrivals and 18 native quest rewards. Six native verified resurrections; independent
+snapshot dead→alive transitions for Jodygdul, Wozon and Tholnaz. Gameobject storm
+is absent: two gather commands admitted, one completed, zero gather eligibility
+rejections (previous window: 17,068). Nachassuw's quest 753 item count gained
+0→1 through a gameobject source. Counts do not prove Botanical Legwork completed.
+Navigation still has one no-progress giver run: Melidoran at map 530 position
+[10366.8,-6462.78,36.7572], destination [10406,-6396.24,52.1757]; 16 objective
+destination-unavailable rejections remain. No objective/turn-in navigation stalls
+or local-search path-unavailable rejections appeared. Broader quest task blocks
+still occur after bounded source searches. Report:
+`/tmp/opencode/quest-object-bounds-live-report.json`. This verifies substantial
+navigation improvement and storm suppression, not universal navigation or quest
+mechanic support; the remaining route/source failures stay open.
 
-**Next:** Publish/deploy quest-object safety follow-up, mandatory reset and bounded
-live verification. Continue TASK-011
+**Continued navigation work (active):** Original instruction: "KEEP GOING".
+Remaining objective rejections are Ualucha, Tholnaz and Jodygdul. Authoritative
+quest data shows Sharing the Land/Stocking Jetsteam level 6 and Sarkoth/Break
+Sharptusk level 5; normal source creatures are rank 0. Native quest-level limits
+can reject these before route selection while publishing generic "destination
+unavailable". Preserve the safety limits, but expose an
+`objective_navigation_blocked_reason` in snapshots and native terminal results.
+Controller rejects premature incomplete-quest work and chooses other progression
+instead of repeatedly navigating; completed turn-ins remain allowed. Three
+regressions cover level-block dispatch, completed turn-in and native rejection
+without retries. Race suite (three runs), vet, C++ codestyle, formatting and
+whitespace pass. Also added per-operation/path-type-change diagnostics for
+failed native movement (path flags and exact start/goal), needed to distinguish
+Melidoran's missing-mesh/partial/invalid route without guessing or bypassing
+terrain. Core/controller builds running under `local-navigation-eligibility`;
+not yet deployed or live-verified.
+
+**Next:** Finish builds, publish/deploy compatible pair and mandatory reset;
+verify eligibility-driven progression and diagnose Melidoran's remaining giver route and unavailable objective
+destinations. Continue TASK-011
 group/social and cohort validation. Broader quest-type coverage remains pending.
 
 ### TASK-012 — Remove legacy autonomous AI tree (queued)

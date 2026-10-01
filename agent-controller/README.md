@@ -12,6 +12,11 @@ slot and item identity; quest counts, not navigation or loot-command admission,
 prove progress. Repeated arrivals without objective progress have a bounded search
 budget. Native item-source projections are capped at 32 entries and disclose
 truncation; unsupported or missing sources fail clearly rather than being invented.
+Native snapshots expose `objective_navigation_blocked_reason` for incomplete
+quests outside the supported level/content limits. Choose other eligible work or
+level up before retrying those objectives; completed quests can still be turned
+in. Path rejections log native path flags and exact start/goal only when the
+per-operation path type changes, without treating movement admission as arrival.
 
 `recover_death` is an explicit controller-selected task: release spirit, walk back
 to a same-map corpse, wait for the ordinary reclaim delay, and reclaim through the

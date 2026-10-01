@@ -48,6 +48,44 @@ func TestQuestItemSkipsUnavailableObject(t *testing.T) {
 	}
 }
 
+func TestQuestNavigationEligibilityBlocksWithoutDispatch(t *testing.T) {
+	a, commands := itemQuestActor(t)
+	a.latest.Quests[0].ObjectiveNavigationBlockedReason = "quest objective navigation requires level 5"
+	a.advanceQuestTask(a.state.Task)
+	if a.state.Task != nil || a.pendingDecisionReason != "task_blocked" {
+		t.Fatal("native level restriction did not block the quest")
+	}
+	for len(commands) > 0 {
+		if cmd := nextLoopCommand(t, commands); cmd.Operation == "navigate_to_quest_objective" {
+			t.Fatal("level-blocked objective dispatched navigation")
+		}
+	}
+}
+
+func TestCompletedQuestIgnoresObjectiveNavigationRestriction(t *testing.T) {
+	a, commands := itemQuestActor(t)
+	a.latest.Quests[0].StatusName = "complete"
+	a.latest.Quests[0].Objectives = nil
+	a.latest.Quests[0].ObjectiveNavigationBlockedReason = "quest objective navigation requires level 5"
+	a.advanceQuestTask(a.state.Task)
+	if cmd := nextLoopCommand(t, commands); cmd.Operation != "navigate_to_quest_turnin" {
+		t.Fatalf("completed quest could not turn in: %s", cmd.Operation)
+	}
+}
+
+func TestNativeQuestLevelRejectionDoesNotRetry(t *testing.T) {
+	a, commands := itemQuestActor(t)
+	a.advanceQuestTask(a.state.Task)
+	nextLoopCommand(t, commands)
+	a.handleTaskOperation(event{Payload: mustJSON(map[string]any{
+		"operation_id": a.state.Task.OperationID, "operation": "navigate_to_quest_objective",
+		"status": "rejected", "reason": "quest objective navigation requires level 5",
+	})})
+	if a.state.Task != nil || a.pendingDecisionReason != "task_blocked" {
+		t.Fatal("native level rejection retained a retrying task")
+	}
+}
+
 func TestQuestObjectAttemptsSurviveRestartWithoutProgress(t *testing.T) {
 	a, commands := itemQuestActor(t)
 	a.latest.Quests[0].Objectives[0].Sources = []int32{-182127}

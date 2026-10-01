@@ -48,8 +48,10 @@ bool AgentMoveToTargetAction::Execute(Event event)
     return MoveToTarget(target, distance);
 }
 
-bool AgentMoveToTargetAction::MoveToPosition(uint32 mapId, float x, float y, float z)
+bool AgentMoveToTargetAction::MoveToPosition(uint32 mapId, float x, float y, float z, uint32* pathType)
 {
+    if (pathType)
+        *pathType = PATHFIND_BLANK;
     if (!bot || bot->GetMapId() != mapId || !IsMovingAllowed() || bot->isMoving() || !std::isfinite(x) ||
         !std::isfinite(y) || !std::isfinite(z))
         return false;
@@ -58,7 +60,10 @@ bool AgentMoveToTargetAction::MoveToPosition(uint32 mapId, float x, float y, flo
     // then discards its chosen path and asks MovePoint to calculate it again.
     // An explicit order must never substitute a shorter path on another floor.
     PathGenerator path(bot);
-    if (!path.CalculatePath(x, y, z) || !(path.GetPathType() & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) ||
+    bool const calculated = path.CalculatePath(x, y, z);
+    if (pathType)
+        *pathType = path.GetPathType();
+    if (!calculated || !(path.GetPathType() & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) ||
         (path.GetPathType() & (PATHFIND_SHORTCUT | PATHFIND_NOPATH | PATHFIND_SHORT | PATHFIND_NOT_USING_PATH |
                                PATHFIND_FARFROMPOLY_START)) ||
         path.GetPath().size() < 2)

@@ -230,13 +230,14 @@ type questObjective struct {
 }
 
 type questInfo struct {
-	QuestID          uint32           `json:"quest_id"`
-	Title            string           `json:"title"`
-	Status           uint32           `json:"status"`
-	StatusName       string           `json:"status_name"`
-	Type             uint32           `json:"type"`
-	SuggestedPlayers uint32           `json:"suggested_players"`
-	Objectives       []questObjective `json:"objectives"`
+	QuestID                          uint32           `json:"quest_id"`
+	Title                            string           `json:"title"`
+	Status                           uint32           `json:"status"`
+	StatusName                       string           `json:"status_name"`
+	Type                             uint32           `json:"type"`
+	SuggestedPlayers                 uint32           `json:"suggested_players"`
+	Objectives                       []questObjective `json:"objectives"`
+	ObjectiveNavigationBlockedReason string           `json:"objective_navigation_blocked_reason,omitempty"`
 }
 
 type playerInfo struct {
@@ -1574,6 +1575,10 @@ func (a *actor) startQuestTask(args map[string]json.RawMessage) {
 		a.rejectTool("work_on_quest", "the external quest loop currently supports solo quests only")
 		return
 	}
+	if quest.StatusName != "complete" && quest.ObjectiveNavigationBlockedReason != "" {
+		a.rejectTool("work_on_quest", quest.ObjectiveNavigationBlockedReason)
+		return
+	}
 	if a.state.Task != nil && a.state.Task.Kind == "quest" && a.state.Task.QuestID == questID {
 		return
 	}
@@ -2245,6 +2250,10 @@ func (a *actor) advanceQuestTask(current *task) {
 		return
 	}
 
+	if quest.StatusName != "complete" && quest.ObjectiveNavigationBlockedReason != "" {
+		a.finishTask("blocked", quest.ObjectiveNavigationBlockedReason)
+		return
+	}
 	if current.Phase == "combat" {
 		found, alive, lootPossible, healthPct := targetStatus(a.latest, current.TargetGUID)
 		if found && alive {
@@ -2538,6 +2547,10 @@ func (a *actor) handleTaskOperation(incoming event) {
 		return
 	}
 	if result.Status != "completed" {
+		if current.Kind == "quest" && strings.HasPrefix(result.Reason, "quest objective navigation requires ") {
+			a.finishTask("blocked", result.Reason)
+			return
+		}
 		if result.Reason == "bot died or left the operation map" {
 			a.finishTask("blocked", "native operation ended after death or map change; inspect state and recover before restarting")
 			return

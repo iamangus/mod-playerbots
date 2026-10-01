@@ -402,6 +402,17 @@ uint64 GetUInt64(boost::property_tree::ptree const& tree, std::string const& key
     return value.empty() ? 0 : std::stoull(value);
 }
 
+std::string QuestObjectiveNavigationBlockReason(Player* bot, Quest const* quest)
+{
+    if (!quest)
+        return "quest template unavailable";
+    if (quest->GetType() == QUEST_TYPE_ELITE || quest->GetType() == QUEST_TYPE_DUNGEON)
+        return "quest objective navigation requires deferred elite or dungeon content";
+    if (quest->GetQuestLevel() > bot->GetLevel() + 1)
+        return "quest objective navigation requires level " + std::to_string(quest->GetQuestLevel() - 1);
+    return "";
+}
+
 TravelDestination* FindQuestDestination(Player* bot, uint32 questId, uint32 objectiveIndex, uint32 itemId, bool turnIn,
                                         bool start)
 {
@@ -468,6 +479,8 @@ TravelDestination* FindQuestDestination(Player* bot, uint32 questId, uint32 obje
     Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
     if (!quest)
         return nullptr;
+    if (!turnIn && !QuestObjectiveNavigationBlockReason(bot, quest).empty())
+        return nullptr;
     std::vector<int32> itemSources;
     if (!turnIn)
     {
@@ -510,9 +523,6 @@ TravelDestination* FindQuestDestination(Player* bot, uint32 questId, uint32 obje
             // Agent tasks validate their own progress and do not maintain legacy
             // combat-readiness/group values. Keep concrete difficulty limits,
             // but allow travel to depleted spawn areas while mobs respawn.
-            if (quest->GetQuestLevel() > bot->GetLevel() + 1 || quest->GetType() == QUEST_TYPE_ELITE ||
-                quest->GetType() == QUEST_TYPE_DUNGEON)
-                continue;
             if (entry > 0)
             {
                 CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(entry);
@@ -600,6 +610,7 @@ struct AgentRuntime::Impl
         uint32 lastReportMs = 0;
         uint32 lastInteractionMs = 0;
         uint32 lastMoveAttemptMs = 0;
+        uint32 navigationPathType = std::numeric_limits<uint32>::max();
         uint32 health = 0;
         Position position;
         Position navigationPosition;
@@ -1059,7 +1070,11 @@ struct AgentRuntime::Impl
                    << "\",\"status\":" << static_cast<uint32>(status.Status) << ",\"status_name\":\""
                    << (status.Status == QUEST_STATUS_COMPLETE ? "complete" : "incomplete")
                    << "\",\"type\":" << quest->GetType() << ",\"suggested_players\":" << quest->GetSuggestedPlayers()
-                   << ",\"objectives\":[";
+                   << ",\"objective_navigation_blocked_reason\":\""
+                   << EscapeJson(status.Status == QUEST_STATUS_INCOMPLETE
+                                     ? QuestObjectiveNavigationBlockReason(bot, quest)
+                                     : "")
+                   << "\",\"objectives\":[";
             bool firstObjective = true;
             for (uint32 index = 0; index < QUEST_OBJECTIVES_COUNT; ++index)
             {
@@ -2154,9 +2169,18 @@ struct AgentRuntime::Impl
                 {
                     loop.lastMoveAttemptMs = now;
                     AgentMoveToTargetAction movement(botAI);
+                    uint32 pathType = 0;
                     loop.movementStarted =
                         movement.MoveToPosition(destination->GetMapId(), destination->GetPositionX(),
-                                                destination->GetPositionY(), destination->GetPositionZ());
+                                                destination->GetPositionY(), destination->GetPositionZ(), &pathType);
+                    if (!loop.movementStarted && loop.navigationPathType != pathType)
+                        LOG_WARN("playerbots.agent",
+                                 "Navigation path rejected bot={} operation_id={} path_type={} map={} "
+                                 "start=[{},{},{}] goal=[{},{},{}]",
+                                 bot->GetName(), loop.command.operationId, pathType, bot->GetMapId(),
+                                 bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                                 destination->GetPositionX(), destination->GetPositionY(), destination->GetPositionZ());
+                    loop.navigationPathType = pathType;
                 }
             }
             return;
@@ -2899,6 +2923,16 @@ struct AgentRuntime::Impl
                 uint32 const objectiveIndex = GetUInt(arguments, "objective_index");
                 bool const turnIn = command.operation == "navigate_to_quest_turnin";
                 bool const start = command.operation == "navigate_to_quest_giver";
+                if (!turnIn && !start)
+                {
+                    std::string const block =
+                        QuestObjectiveNavigationBlockReason(botAI->GetBot(), sObjectMgr->GetQuestTemplate(questId));
+                    if (!block.empty())
+                    {
+                        PublishResult(command.requestId, command.operationId, command.operation, "rejected", block);
+                        return;
+                    }
+                }
                 TravelDestination* destination = FindQuestDestination(botAI->GetBot(), questId, objectiveIndex,
                                                                       GetUInt(arguments, "item_id"), turnIn, start);
                 WorldPosition position(botAI->GetBot());
