@@ -37,6 +37,7 @@ using boost::placeholders::_1;
 #include "MovementActions.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "PathGenerator.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -411,6 +412,48 @@ std::string QuestObjectiveNavigationBlockReason(Player* bot, Quest const* quest)
     if (quest->GetQuestLevel() > bot->GetLevel() + 1)
         return "quest objective navigation requires level " + std::to_string(quest->GetQuestLevel() - 1);
     return "";
+}
+
+WorldPosition* FindQuestNavigationPoint(Player* bot, TravelDestination* destination)
+{
+    if (!destination)
+        return nullptr;
+    WorldPosition position(bot);
+    std::vector<WorldPosition*> candidates;
+    for (WorldPosition* point : destination->getPoints(true))
+        if (point && point->GetMapId() == bot->GetMapId())
+            candidates.push_back(point);
+    if (candidates.empty())
+        return nullptr;
+
+    // Admission-only work: inspect at most eight nearby spawn points for this
+    // exact source, never a scan/path query from a per-tick trigger.
+    constexpr size_t MAX_QUEST_PATH_CANDIDATES = 8;
+    size_t const count = std::min(candidates.size(), MAX_QUEST_PATH_CANDIDATES);
+    std::partial_sort(candidates.begin(), candidates.begin() + count, candidates.end(),
+                      [&](WorldPosition const* left, WorldPosition const* right)
+                      { return left->GetExactDist(&position) < right->GetExactDist(&position); });
+    for (size_t index = 0; index < count; ++index)
+    {
+        WorldPosition* point = candidates[index];
+        if (point->GetExactDist(bot) <= destination->getRadiusMin())
+            return point;
+        PathGenerator path(bot);
+        if (!path.CalculatePath(point->GetPositionX(), point->GetPositionY(), point->GetPositionZ()) ||
+            !(path.GetPathType() & PATHFIND_NORMAL) ||
+            (path.GetPathType() &
+             (PATHFIND_SHORTCUT | PATHFIND_NOPATH | PATHFIND_SHORT | PATHFIND_NOT_USING_PATH | PATHFIND_FARFROMPOLY)) ||
+            path.GetPath().size() < 2)
+            continue;
+        if (index)
+            LOG_INFO("playerbots.agent", "Quest route alternate bot={} source_entry={} candidate={} goal=[{},{},{}]",
+                     bot->GetName(), destination->getEntry(), index, point->GetPositionX(), point->GetPositionY(),
+                     point->GetPositionZ());
+        return point;
+    }
+    // No proven complete route: retain ordinary bounded partial-path navigation
+    // and its diagnostics. Never relocate a bot or claim the spawn was reached.
+    return candidates.front();
 }
 
 TravelDestination* FindQuestDestination(Player* bot, uint32 questId, uint32 objectiveIndex, uint32 itemId, bool turnIn,
@@ -2935,21 +2978,7 @@ struct AgentRuntime::Impl
                 }
                 TravelDestination* destination = FindQuestDestination(botAI->GetBot(), questId, objectiveIndex,
                                                                       GetUInt(arguments, "item_id"), turnIn, start);
-                WorldPosition position(botAI->GetBot());
-                WorldPosition* nearest = nullptr;
-                float distance = std::numeric_limits<float>::max();
-                if (destination)
-                    for (WorldPosition* point : destination->getPoints(true))
-                    {
-                        if (!point || point->GetMapId() != botAI->GetBot()->GetMapId())
-                            continue;
-                        float const candidateDistance = point->distance(&position);
-                        if (candidateDistance < distance)
-                        {
-                            distance = candidateDistance;
-                            nearest = point;
-                        }
-                    }
+                WorldPosition* nearest = FindQuestNavigationPoint(botAI->GetBot(), destination);
                 bool const started = nearest && SetTravelTarget(botAI, destination, nearest);
                 if (started)
                     StartOperation(botAI, command);
