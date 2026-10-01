@@ -28,10 +28,7 @@
 class GroupInviteOperation : public PlayerbotOperation
 {
 public:
-    GroupInviteOperation(ObjectGuid botGuid, ObjectGuid targetGuid)
-        : m_botGuid(botGuid), m_targetGuid(targetGuid)
-    {
-    }
+    GroupInviteOperation(ObjectGuid botGuid, ObjectGuid targetGuid) : m_botGuid(botGuid), m_targetGuid(targetGuid) {}
 
     bool Execute() override
     {
@@ -119,8 +116,7 @@ private:
 class GroupRemoveMemberOperation : public PlayerbotOperation
 {
 public:
-    GroupRemoveMemberOperation(ObjectGuid botGuid, ObjectGuid targetGuid)
-        : m_botGuid(botGuid), m_targetGuid(targetGuid)
+    GroupRemoveMemberOperation(ObjectGuid botGuid, ObjectGuid targetGuid) : m_botGuid(botGuid), m_targetGuid(targetGuid)
     {
     }
 
@@ -271,10 +267,13 @@ private:
 class ArenaGroupFormationOperation : public PlayerbotOperation
 {
 public:
-    ArenaGroupFormationOperation(ObjectGuid leaderGuid, std::vector<ObjectGuid> memberGuids,
-                                 uint32 requiredSize, uint32 arenaTeamId, std::string arenaTeamName)
-        : m_leaderGuid(leaderGuid), m_memberGuids(memberGuids),
-          m_requiredSize(requiredSize), m_arenaTeamId(arenaTeamId), m_arenaTeamName(arenaTeamName)
+    ArenaGroupFormationOperation(ObjectGuid leaderGuid, std::vector<ObjectGuid> memberGuids, uint32 requiredSize,
+                                 uint32 arenaTeamId, std::string arenaTeamName)
+        : m_leaderGuid(leaderGuid),
+          m_memberGuids(memberGuids),
+          m_requiredSize(requiredSize),
+          m_arenaTeamId(arenaTeamId),
+          m_arenaTeamName(arenaTeamName)
     {
     }
 
@@ -299,7 +298,7 @@ public:
             {
                 memberGroup->RemoveMember(memberGuid);
                 LOG_DEBUG("playerbots", "ArenaGroupFormationOperation: Removed {} from their existing group",
-                         member->GetName());
+                          member->GetName());
             }
         }
 
@@ -317,13 +316,13 @@ public:
         {
             delete newGroup;
             LOG_ERROR("playerbots", "ArenaGroupFormationOperation: Failed to create arena group for leader {}",
-                     leader->GetName());
+                      leader->GetName());
             return false;
         }
 
         sGroupMgr->AddGroup(newGroup);
         LOG_DEBUG("playerbots", "ArenaGroupFormationOperation: Created new arena group with leader {}",
-                 leader->GetName());
+                  leader->GetName());
 
         // Step 4: Add members to the new group
         uint32 addedMembers = 0;
@@ -333,26 +332,25 @@ public:
             if (!member)
             {
                 LOG_DEBUG("playerbots", "ArenaGroupFormationOperation: Member {} not found, skipping",
-                         memberGuid.ToString());
+                          memberGuid.ToString());
                 continue;
             }
 
             if (member->GetLevel() < 70)
             {
                 LOG_DEBUG("playerbots", "ArenaGroupFormationOperation: Member {} is below level 70, skipping",
-                         member->GetName());
+                          member->GetName());
                 continue;
             }
 
             if (newGroup->AddMember(member))
             {
                 addedMembers++;
-                LOG_DEBUG("playerbots", "ArenaGroupFormationOperation: Added {} to arena group",
-                         member->GetName());
+                LOG_DEBUG("playerbots", "ArenaGroupFormationOperation: Added {} to arena group", member->GetName());
             }
             else
                 LOG_ERROR("playerbots", "ArenaGroupFormationOperation: Failed to add {} to arena group",
-                         member->GetName());
+                          member->GetName());
         }
 
         if (addedMembers == 0)
@@ -375,7 +373,7 @@ public:
 
             member->RemoveAurasWithInterruptFlags(AURA_INTERRUPT_FLAG_TELEPORTED | AURA_INTERRUPT_FLAG_CHANGE_MAP);
             member->TeleportTo(leader->GetMapId(), leader->GetPositionX(), leader->GetPositionY(),
-                              leader->GetPositionZ(), 0);
+                               leader->GetPositionZ(), 0);
 
             LOG_DEBUG("playerbots", "ArenaGroupFormationOperation: Teleported {} to leader", member->GetName());
         }
@@ -384,13 +382,13 @@ public:
         if (newGroup->GetMembersCount() < m_requiredSize)
         {
             LOG_INFO("playerbots", "Team #{} <{}> Group is not ready for match (not enough members: {}/{})",
-                    m_arenaTeamId, m_arenaTeamName, newGroup->GetMembersCount(), m_requiredSize);
+                     m_arenaTeamId, m_arenaTeamName, newGroup->GetMembersCount(), m_requiredSize);
             newGroup->Disband();
             return false;
         }
 
-        LOG_INFO("playerbots", "Team #{} <{}> Group is ready for match with {} members",
-                m_arenaTeamId, m_arenaTeamName, newGroup->GetMembersCount());
+        LOG_INFO("playerbots", "Team #{} <{}> Group is ready for match with {} members", m_arenaTeamId, m_arenaTeamName,
+                 newGroup->GetMembersCount());
         return true;
     }
 
@@ -451,6 +449,37 @@ private:
     ObjectGuid m_botGuid;
 };
 
+// Full bot logout on the world thread. The instant-logout path deletes the bot
+// session and player synchronously and must never run from a map thread, where
+// the caller still holds live pointers into the destroyed objects.
+class LogoutPlayerBotOperation : public PlayerbotOperation
+{
+public:
+    explicit LogoutPlayerBotOperation(ObjectGuid botGuid) : m_botGuid(botGuid) {}
+
+    bool Execute() override
+    {
+        if (!ObjectAccessor::FindPlayer(m_botGuid))
+            return false;
+
+        sRandomPlayerbotMgr.LogoutPlayerBot(m_botGuid);
+        return true;
+    }
+
+    ObjectGuid GetBotGuid() const override { return m_botGuid; }
+    uint32 GetPriority() const override { return 70; }
+    std::string GetName() const override { return "LogoutPlayerBot"; }
+
+    bool IsValid() const override
+    {
+        Player* bot = ObjectAccessor::FindPlayer(m_botGuid);
+        return bot != nullptr;
+    }
+
+private:
+    ObjectGuid m_botGuid;
+};
+
 // Add player bot operation (for logging in bots from map threads)
 class AddPlayerBotOperation : public PlayerbotOperation
 {
@@ -472,10 +501,7 @@ public:
 
     std::string GetName() const override { return "AddPlayerBot"; }
 
-    bool IsValid() const override
-    {
-        return !ObjectAccessor::FindConnectedPlayer(m_botGuid);
-    }
+    bool IsValid() const override { return !ObjectAccessor::FindConnectedPlayer(m_botGuid); }
 
 private:
     ObjectGuid m_botGuid;

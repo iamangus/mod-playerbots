@@ -47,7 +47,9 @@
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotMgr.h"
+#include "PlayerbotOperations.h"
 #include "PlayerbotTextMgr.h"
+#include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
 #include "PositionValue.h"
 #include "RBAC.h"
@@ -553,11 +555,15 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
 
     // Externally provisioned bots exist only while a live agent controller
     // manages them. Losing it never falls back to legacy AI: log the bot out.
-    if (sPlayerbotAIConfig.agentBridgePopulationEnabled && agentRuntime && agentRuntime->IsConfigured(this) &&
-        !agentRuntime->IsControllerPresent() && sRandomPlayerbotMgr.IsRandomBot(bot))
+    // The instant-logout path deletes the session synchronously and must run on
+    // the world thread; Stop() is the map-thread-safe once-only marker.
+    if (sPlayerbotAIConfig.agentBridgePopulationEnabled && agentRuntime && !agentRuntime->IsStopped() &&
+        agentRuntime->IsConfigured(this) && !agentRuntime->IsControllerPresent() &&
+        sRandomPlayerbotMgr.IsRandomBot(bot))
     {
         agentRuntime->Stop(this);
-        sRandomPlayerbotMgr.LogoutPlayerBot(bot->GetGUID());
+        PlayerbotWorldThreadProcessor::instance().QueueOperation(
+            std::make_unique<LogoutPlayerBotOperation>(bot->GetGUID()));
         return;
     }
 

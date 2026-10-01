@@ -275,12 +275,71 @@ standards. Ran `clean-playerbot-state.sh` for the just-finished required-control
 deployment (log: `/tmp/opencode/clean-reset-controller-required.log`); verification
 below. Going forward, every container deployment ends with this script.
 
-**Next:** Verify the reset results, commit/push required-controller work and docs,
-then implement authoritative ToCloud9 auction/mail handoffs
-before resuming the controller. Continue bot ownership/group/login validation.
-Then perform remaining authorized native/live validation and route-data collection.
-Keep cross-map gathering explicitly unfinished. No task is marked
-complete on controller-only evidence.
+**User directive — resume the controller:** The user asked to bring the controller
+up. Scaled the staged controller (`2491832a…`, still latest) to one replica; pod
+ready; saved values flipped to `paused: false`. The clean-reset baseline was just
+established (zero bots, zero groups, purged stream). Live observation then found a
+bootstrap deadlock in the required-controller design: the controller only
+registers a worldserver owner for heartbeats when it sees bot events, and the
+worldserver only subscribes the bot command subject from per-bot updates — with
+zero bots online after the reset, no heartbeat can ever flow and no bot can ever
+log in. Confirmed live: no controller_heartbeat on the owner command subject and
+zero logins for minutes.
+
+**Bootstrap fix:** (1) Controller: `population_owner_online` now registers the
+announcing owner across every owned shard (`noteOwnedShards`), so heartbeats flow
+before any bot is online; stale announcements stay unregistered and the expired-
+stamp fallback now selects a freshly registered live owner. (2) Native: the
+population bridge subscribes the bot command subject on the world thread
+(`AgentRuntime::EnsureBotCommandSubscription`, idempotent, shared with the
+per-bot refresh) so heartbeats are received with zero bots online. Updated the
+owner-discovery regression to assert all-shard registration, stale rejection, and
+the registration fallback. Controller race tests (three runs) and vet pass;
+formatting/codestyle/diff whitespace pass. Controller (`sha256:c29e8ecce29e90e82133da1f9a81ff05ed330da8e1414b1c71dc8740e8a81204`)
+and core (`sha256:98a50028807d44d5da1529a1e1342fa1a4186a4251eea1420560d68059f1a5ee`)
+images were published, deployed, and the mandatory clean reset ran (log:
+`/tmp/opencode/clean-reset-bootstrap-gate.log`; all four rollouts completed).
+Saved digests match. Committed as `ee383db0` and pushed.
+
+**Live bootstrap verified:** After the reset, the required-controller chain now
+works end-to-end: controller heartbeats/commands flow on the owner command
+subject, bots log in without any manual kickstart, and the LLM drives real
+activity — observed `send_chat` introductions with team-up offers in say,
+`approach_target` combat approaches, `navigate_to_quest_giver` (quest 400), and
+request-correlated snapshots. Within minutes the online population reached 88
+bots (levels 1–6) toward the cohort target; 39 tool-selected decisions in the
+last six minutes; zero panics, model-unconfigured, or decision-failure lines.
+This proves bootstrap, the login gate under an active controller, and live model
+operation on the freshly reset state. It does not yet prove acquisition/social/
+corridor outcomes or the full 80-bot stable cohort.
+
+**User directive — wipe and rebuild the bot cohort:** The user corrected that
+Ollos (60169) and Lotiner (60249) are bots, not their characters — earlier session
+notes wrongly listed them alongside Peepee; corrected here. DB evidence confirmed
+TASK-005's skew: classes present are only Paladin 192, Rogue 127, Priest 24,
+Shaman 17 — Human/Dwarf/Draenei/Blood-Elf all mapped to Paladin and
+Night-Elf/Orc/Gnome/Troll to Rogue by the pre-fix allocation. The joint
+race/class fix only affects new characters, and with 360 existing characters the
+population is over target, so no new creations can ever diversify the visible
+cohort. The user authorized deleting the entire bot cohort (level 1–6 test
+characters) and letting the controller rebuild it diversely.
+
+**Controller-loss logout crash:** Scaling the controller to zero for the wipe
+exposed a segfault (exit 139 at 17:59:20) in the required-controller logout path:
+it called the instant-logout branch (synchronous session/player deletion) from
+the map thread, where the caller still holds live pointers into destroyed
+objects. Every pre-existing logout path runs on the world thread or early-returns
+for already-logging-out sessions. Fixed by adding `LogoutPlayerBotOperation`
+(world-thread queue) and a once-only `AgentRuntime::IsStopped()` marker; the map
+thread now only stops the agent and queues the logout. Formatting/codestyle pass;
+core image building under `local-safe-logout`. Also noted (not fixed here):
+the pre-existing whisper-logout chat command path calls the same instant logout
+from a map thread and carries the same latent crash risk.
+
+**Next:** Deploy the safe-logout image, verify zero bots and clean online flags,
+delete the bot cohort via the canonical `Player::DeleteFromDB` table set, clear
+stale Redis bot records, run the mandatory clean reset, resume the controller,
+and verify diverse new-cohort creation live.
 
 ### TASK-012 — Remove legacy autonomous AI tree (queued)
 

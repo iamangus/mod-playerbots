@@ -3025,6 +3025,8 @@ bool AgentRuntime::IsEnabled(PlayerbotAI* botAI) const
 
 bool AgentRuntime::IsSendingChat() const { return m_impl->sendingAgentChat; }
 
+bool AgentRuntime::IsStopped() const { return m_impl->stopped; }
+
 void AgentRuntime::Stop(PlayerbotAI* botAI)
 {
     if (!botAI || !botAI->GetBot() || m_impl->stopped)

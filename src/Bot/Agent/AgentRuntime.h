@@ -32,6 +32,7 @@ public:
 
     bool IsConfigured(PlayerbotAI* botAI) const;
     bool IsEnabled(PlayerbotAI* botAI) const;
+    bool IsStopped() const;
 
     // Subscribe this worldserver's bot command subject once. The population
     // bridge calls it on the world thread so controller heartbeats reach the
