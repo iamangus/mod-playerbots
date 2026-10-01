@@ -1457,6 +1457,15 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
                 botOutgoingPacketHandlers.AddPacket(packet);
             return;
         }
+        case SMSG_TRADE_STATUS:
+        case SMSG_TRADE_STATUS_EXTENDED:
+        {
+            if (agentRuntime && agentRuntime->IsEnabled(this))
+                agentRuntime->OnTradeStatus(this, packet);
+            else
+                botOutgoingPacketHandlers.AddPacket(packet);
+            return;
+        }
         default:
             botOutgoingPacketHandlers.AddPacket(packet);
     }

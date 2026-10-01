@@ -264,14 +264,16 @@ type snapshot struct {
 	} `json:"bot"`
 	Professions map[string]uint32 `json:"professions"`
 	Inventory   struct {
-		MoneyCopper uint32 `json:"money_copper"`
-		Items       []struct {
+		MoneyCopper     uint32          `json:"money_copper"`
+		TradeableStacks json.RawMessage `json:"tradeable_stacks,omitempty"`
+		Items           []struct {
 			ItemID uint32 `json:"item_id"`
 			Count  uint32 `json:"count"`
 			Name   string `json:"name"`
 		} `json:"items"`
 	} `json:"inventory"`
-	Quests          []questInfo `json:"quests"`
+	Trade           json.RawMessage `json:"trade,omitempty"`
+	Quests          []questInfo     `json:"quests"`
 	NearbyCreatures []struct {
 		GUID      string    `json:"guid"`
 		Entry     uint32    `json:"entry"`
@@ -344,6 +346,7 @@ type persistedAgent struct {
 	PendingDecisionReason   string               `json:"pending_decision_reason,omitempty"`
 	DecisionPending         bool                 `json:"decision_pending,omitempty"`
 	UnavailableDestinations map[string]time.Time `json:"unavailable_destinations,omitempty"`
+	ClusterGroupInvite      bool                 `json:"cluster_group_invite,omitempty"`
 }
 
 type recentEvent struct {
@@ -849,7 +852,7 @@ func (a *actor) handleEvent(incoming event) {
 	if incoming.OwnerToken != "" {
 		a.ownerToken = incoming.OwnerToken
 	}
-	if (incoming.Type == "chat_received" || incoming.Type == "group_invite_received") &&
+	if (incoming.Type == "chat_received" || incoming.Type == "group_invite_received" || incoming.Type == "trade_updated") &&
 		incoming.Timestamp > 0 && time.Since(time.UnixMilli(incoming.Timestamp)) > 2*time.Minute {
 		a.online = true
 		return
@@ -857,6 +860,7 @@ func (a *actor) handleEvent(incoming event) {
 	if snapshotBytes := snapshotFromEvent(incoming); len(snapshotBytes) > 0 {
 		var current snapshot
 		if err := json.Unmarshal(snapshotBytes, &current); err == nil {
+			current.Bot.PendingGroupInvite = current.Bot.PendingGroupInvite || a.state.ClusterGroupInvite
 			a.latest = current
 			a.hasSnapshot = true
 			a.snapshotUpdatedAt = time.Now().UTC()
@@ -925,13 +929,29 @@ func (a *actor) handleEvent(incoming event) {
 				a.decide(reason)
 			}
 		}
-	case "chat_received", "group_invite_received":
+	case "chat_received", "group_invite_received", "trade_updated":
+		if incoming.Type == "group_invite_received" {
+			var invite struct {
+				SocialBridge bool `json:"social_bridge"`
+			}
+			_ = json.Unmarshal(incoming.Payload, &invite)
+			a.state.ClusterGroupInvite = invite.SocialBridge
+			a.persist()
+		}
 		a.online = true
 		a.pendingDecisionReason = incoming.Type
 		if a.bridgeActive {
 			a.requestSnapshot()
 		}
 	case "operation_result":
+		var socialResult struct {
+			SocialBridge bool   `json:"social_bridge"`
+			Status       string `json:"status"`
+		}
+		if json.Unmarshal(incoming.Payload, &socialResult) == nil && socialResult.SocialBridge && socialResult.Status == "completed" {
+			a.state.ClusterGroupInvite = false
+			a.persist()
+		}
 		if !a.bridgeActive {
 			return
 		}
@@ -1084,6 +1104,8 @@ func (a *actor) applyTool(call toolCall) {
 	switch call.Name {
 	case "send_chat":
 		a.sendPrimitive("send_chat", rawMapToAny(args))
+	case "begin_trade", "accept_trade", "cancel_trade", "offer_trade_money", "offer_trade_item":
+		a.sendPrimitive(call.Name, rawMapToAny(args))
 	case "invite_to_group", "accept_group_invite", "decline_group_invite":
 		a.sendPrimitive(call.Name, rawMapToAny(args))
 	case "navigate_to_player", "follow_player":
@@ -1232,6 +1254,15 @@ func (a *actor) rejectTool(name, reason string) {
 }
 
 func (a *actor) advanceTask() {
+	var trade struct {
+		Active bool `json:"active"`
+	}
+	if json.Unmarshal(a.latest.Trade, &trade) == nil && trade.Active {
+		if a.state.Task != nil {
+			a.state.Task.LastProgressUTC = time.Now().UTC()
+		}
+		return
+	}
 	current := a.state.Task
 	if current == nil || !a.online || !a.bridgeActive || !a.hasSnapshot {
 		return
@@ -2090,10 +2121,17 @@ func (a *actor) sendCommandWithID(requestID, operationID, operation string, argu
 		log.Printf("encode command for %s: %v", a.botGUID, err)
 		return
 	}
-	subject := a.owner.cfg.subjectPrefix + ".commands." + a.ownerToken
+	subject := commandSubject(a.owner.cfg.subjectPrefix, a.ownerToken, operation, a.state.ClusterGroupInvite)
 	if err := a.owner.nats.Publish(subject, body); err != nil {
 		log.Printf("publish command for bot %s: %v", a.botGUID, err)
 	}
+}
+
+func commandSubject(prefix, owner, operation string, clusterInvite bool) string {
+	if clusterInvite && (operation == "accept_group_invite" || operation == "decline_group_invite") {
+		return prefix + ".social.commands." + owner
+	}
+	return prefix + ".commands." + owner
 }
 
 func (a *actor) finishTask(status, reason string) {

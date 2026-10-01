@@ -226,6 +226,24 @@ var agentTools = []map[string]any{
 	}, []string{"player_name"}),
 	functionTool("accept_group_invite", "Accept the pending group invitation.", map[string]any{}, nil),
 	functionTool("decline_group_invite", "Decline the pending group invitation.", map[string]any{}, nil),
+	functionTool("begin_trade", "Open the pending trade window. Use the current trade.revision; pause travel while trading.", map[string]any{
+		"trade_revision": map[string]any{"type": "integer"},
+	}, []string{"trade_revision"}),
+	functionTool("accept_trade", "Accept the currently observed trade offer. Inspect both offers first; never accept an unseen or changed offer.", map[string]any{
+		"trade_revision": map[string]any{"type": "integer"},
+	}, []string{"trade_revision"}),
+	functionTool("cancel_trade", "Cancel the current trade.", map[string]any{
+		"trade_revision": map[string]any{"type": "integer"},
+	}, []string{"trade_revision"}),
+	functionTool("offer_trade_money", "Set the copper offered in the current trade; this does not accept the trade.", map[string]any{
+		"trade_revision": map[string]any{"type": "integer"},
+		"money_copper":   map[string]any{"type": "integer", "minimum": 0},
+	}, []string{"trade_revision", "money_copper"}),
+	functionTool("offer_trade_item", "Offer one entire carried stack from inventory.tradeable_stacks. Does not accept the trade.", map[string]any{
+		"trade_revision": map[string]any{"type": "integer"},
+		"item_guid":      map[string]any{"type": "string"},
+		"trade_slot":     map[string]any{"type": "integer", "minimum": 0, "maximum": 5},
+	}, []string{"trade_revision", "item_guid", "trade_slot"}),
 	functionTool("navigate_to_player", "Meet a nearby player.", map[string]any{
 		"player_name": map[string]any{"type": "string"},
 	}, []string{"player_name"}),

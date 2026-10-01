@@ -34,6 +34,10 @@ public:
                        std::string const& senderName,
                        std::string const& channel, std::string const& message);
     void OnGroupInvite(PlayerbotAI* botAI, WorldPacket const& packet);
+    void OnTradeStatus(PlayerbotAI* botAI, WorldPacket const& packet);
+    uint64 GetTradeRevision() const;
+    void OnTradeOperationResult(std::string const& requestId, std::string const& operationId,
+                                std::string const& operation, bool success);
     void OnQuestProgress(PlayerbotAI* botAI, uint32_t opcode);
 
 private:

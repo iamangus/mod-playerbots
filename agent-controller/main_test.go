@@ -213,6 +213,38 @@ func TestCombatApproachesDistantTargetsBeforeEngaging(t *testing.T) {
 	}
 }
 
+func TestClusterInvitationUsesGroupServiceBridge(t *testing.T) {
+	for _, operation := range []string{"accept_group_invite", "decline_group_invite"} {
+		if commandSubject("playerbots.v1", "owner", operation, true) != "playerbots.v1.social.commands.owner" {
+			t.Fatal("cluster invitation was sent to a native-only group handler")
+		}
+		if commandSubject("playerbots.v1", "owner", operation, false) != "playerbots.v1.commands.owner" {
+			t.Fatal("native invitation was redirected to the cluster")
+		}
+	}
+	if commandSubject("playerbots.v1", "owner", "snapshot", true) != "playerbots.v1.commands.owner" {
+		t.Fatal("ordinary primitives must still execute in the core")
+	}
+}
+
+func TestTradeObservationAndTaskPause(t *testing.T) {
+	var a actor
+	if err := json.Unmarshal([]byte(`{"trade":{"active":true,"revision":4,"partner_offer":{"money_copper":10}},"inventory":{"tradeable_stacks":[{"item_guid":"123","count":2}]}}`), &a.latest); err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(a.latest)
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal(encoded, &fields)
+	if len(a.latest.Inventory.TradeableStacks) == 0 || len(fields["trade"]) == 0 {
+		t.Fatal("trade state was dropped from model input")
+	}
+	a.state.Task = &task{Kind: "kill_count", Phase: "select"}
+	a.advanceTask()
+	if a.state.Task.Phase != "select" || a.state.Task.LastProgressUTC.IsZero() {
+		t.Fatal("ordinary task was not paused during trade")
+	}
+}
+
 func TestParsePopulationSnapshotAggregatesCounts(t *testing.T) {
 	payload := json.RawMessage(`{"status":"completed","total":7,"counts":[
 		{"race":1,"class":1,"level_band":0,"count":4},

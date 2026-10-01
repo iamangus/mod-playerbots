@@ -12,6 +12,9 @@ namespace boost::property_tree::json_parser::detail
 }
 
 #include "AgentRuntime.h"
+
+#include "AgentTradeOperation.h"
+#include "PlayerbotWorldThreadProcessor.h"
 #include "AgentBridgeShared.h"
 #include "AiObjectContext.h"
 #include "ChooseTravelTargetAction.h"
@@ -429,6 +432,8 @@ struct AgentRuntime::Impl
     std::shared_ptr<AgentBridgeInbox> inbox = std::make_shared<AgentBridgeInbox>();
     bool addedTravelStrategy = false;
     bool invitePending = false;
+    std::atomic<uint64> tradeRevision{0};
+    bool tradeMovementSuspended = false;
     WorldPacket invitePacket;
     std::mutex inviteMutex;
     bool initialized = false;
@@ -695,7 +700,55 @@ struct AgentRuntime::Impl
             if (++inventoryCount >= AGENT_MAX_SNAPSHOT_ITEMS)
                 break;
         }
+        result << "],\"tradeable_stacks\":[";
+        bool firstStack = true;
+        uint32 stackCount = 0;
+        for (Item* item : botAI->GetInventoryItems())
+            if (item && !item->IsEquipped() && item->CanBeTraded())
+            {
+                if (!firstStack)
+                    result << ",";
+                firstStack = false;
+                result << "{\"item_guid\":\"" << item->GetGUID().GetRawValue() << "\",\"item_id\":"
+                       << item->GetEntry() << ",\"count\":" << item->GetCount() << ",\"name\":\""
+                       << EscapeJson(item->GetTemplate()->Name1) << "\"}";
+                if (++stackCount >= AGENT_MAX_SNAPSHOT_ITEMS)
+                    break;
+            }
         result << "]}";
+
+        result << ",\"trade\":{\"revision\":" << tradeRevision.load();
+        if (TradeData* trade = bot->GetTradeData())
+        {
+            Player* partner = bot->GetTrader();
+            result << ",\"active\":true,\"partner_guid\":\""
+                   << EscapeJson(partner ? std::to_string(partner->GetGUID().GetRawValue()) : "")
+                   << "\",\"partner_name\":\"" << EscapeJson(partner ? partner->GetName() : "") << "\"";
+            auto writeOffer = [&](char const* name, TradeData* offer)
+            {
+                result << ",\"" << name << "\":{\"money_copper\":" << (offer ? offer->GetMoney() : 0)
+                       << ",\"accepted\":" << (offer && offer->IsAccepted() ? "true" : "false")
+                       << ",\"items\":[";
+                bool first = true;
+                if (offer)
+                    for (uint8 slot = 0; slot < TRADE_SLOT_TRADED_COUNT; ++slot)
+                        if (Item* item = offer->GetItem(TradeSlots(slot)))
+                        {
+                            if (!first)
+                                result << ",";
+                            first = false;
+                            result << "{\"slot\":" << static_cast<uint32>(slot)
+                                   << ",\"item_id\":" << item->GetEntry() << ",\"count\":" << item->GetCount()
+                                   << ",\"name\":\"" << EscapeJson(item->GetTemplate()->Name1) << "\"}";
+                        }
+                result << "]}";
+            };
+            writeOffer("bot_offer", trade);
+            writeOffer("partner_offer", trade->GetTraderData());
+        }
+        else
+            result << ",\"active\":false";
+        result << "}";
 
         result << ",\"quests\":[";
         bool first = true;
@@ -871,6 +924,16 @@ struct AgentRuntime::Impl
             std::istringstream input(command.arguments.empty() ? "{}" : command.arguments);
             boost::property_tree::read_json(input, arguments);
 
+            if (botAI->GetBot()->GetTradeData() &&
+                (command.operation == "move_random" || command.operation == "approach_target" ||
+                 command.operation == "engage_target" || command.operation == "follow_player" ||
+                 command.operation.compare(0, 9, "navigate_") == 0))
+            {
+                PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                              "movement and combat tasks are paused during trade");
+                return;
+            }
+
             if (command.operation == "snapshot")
             {
                 PublishSnapshot(botAI, command);
@@ -879,6 +942,35 @@ struct AgentRuntime::Impl
             if (command.operation == "send_chat")
             {
                 SendChat(botAI, arguments, command);
+                return;
+            }
+            if (command.operation == "begin_trade" || command.operation == "accept_trade" ||
+                command.operation == "cancel_trade" || command.operation == "offer_trade_money" ||
+                command.operation == "offer_trade_item")
+            {
+                Player* bot = botAI->GetBot();
+                Player* partner = bot->GetTrader();
+                uint64 const revision = GetUInt64(arguments, "trade_revision");
+                if (!partner || !bot->GetTradeData() || !arguments.get_optional<uint64>("trade_revision") ||
+                    revision != tradeRevision.load())
+                {
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "trade unavailable or offer changed; request a fresh snapshot");
+                    return;
+                }
+                uint32 const slot = arguments.get<uint32>("trade_slot", 0);
+                if (slot >= TRADE_SLOT_TRADED_COUNT)
+                {
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "invalid trade slot");
+                    return;
+                }
+                PlayerbotWorldThreadProcessor::instance().QueueOperation(std::make_unique<AgentTradeOperation>(
+                    bot->GetGUID(), partner->GetGUID(), revision, command.operation,
+                    arguments.get<uint32>("money_copper", 0), static_cast<uint8>(slot),
+                    ObjectGuid(GetUInt64(arguments, "item_guid")), command.requestId, command.operationId));
+                PublishResult(command.requestId, command.operationId, command.operation, "accepted",
+                              "trade operation queued; verify live trade state");
                 return;
             }
             if (command.operation == "move_random")
@@ -1274,6 +1366,33 @@ void AgentRuntime::OnQuestProgress(PlayerbotAI* botAI, uint32 opcode)
     m_impl->Publish("quest_progress", "", "{\"opcode\":" + std::to_string(opcode) + "}");
 }
 
+uint64 AgentRuntime::GetTradeRevision() const { return m_impl->tradeRevision.load(); }
+
+void AgentRuntime::OnTradeOperationResult(std::string const& requestId, std::string const& operationId,
+                                         std::string const& operation, bool success)
+{
+    std::ostringstream payload;
+    payload << "{\"operation_id\":\"" << EscapeJson(operationId) << "\",\"operation\":\""
+            << EscapeJson(operation) << "\",\"status\":\"" << (success ? "completed" : "rejected")
+            << "\",\"reason\":\""
+            << (success ? "trade state updated" : "trade changed or operation unavailable; inspect fresh state")
+            << "\"}";
+    m_impl->Publish("operation_result", requestId, payload.str());
+}
+
+void AgentRuntime::OnTradeStatus(PlayerbotAI* botAI, WorldPacket const& packet)
+{
+    if (!IsEnabled(botAI) || m_impl->stopped)
+        return;
+    ++m_impl->tradeRevision;
+    WorldPacket copy(packet);
+    copy.rpos(0);
+    uint32 status = 0;
+    if (packet.GetOpcode() == SMSG_TRADE_STATUS)
+        copy >> status;
+    m_impl->Publish("trade_updated", "", "{\"status\":" + std::to_string(status) + "}");
+}
+
 void AgentRuntime::Update(PlayerbotAI* botAI, uint32 elapsed)
 {
     (void)elapsed;
@@ -1370,4 +1489,15 @@ void AgentRuntime::Update(PlayerbotAI* botAI, uint32 elapsed)
             break;
         m_impl->ExecuteCommand(botAI, command);
     }
+    if (bot->GetTradeData())
+    {
+        if (!m_impl->tradeMovementSuspended)
+        {
+            m_impl->ClearTravelTarget(botAI);
+            bot->StopMoving();
+            m_impl->tradeMovementSuspended = true;
+        }
+    }
+    else
+        m_impl->tradeMovementSuspended = false;
 }
