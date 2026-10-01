@@ -21,6 +21,8 @@ using boost::placeholders::_1;
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "AccountMgr.h"
@@ -35,6 +37,7 @@ using boost::placeholders::_1;
 #include "PlayerbotsDatabase.h"
 #include "RandomPlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
+#include "Realm.h"
 #include "SharedDefines.h"
 #include "Timer.h"
 #include "WorldSession.h"
@@ -48,6 +51,9 @@ constexpr size_t POPULATION_MAX_PENDING_COMMANDS = 64;
 constexpr size_t POPULATION_MAX_RESULT_CACHE = 128;
 constexpr uint32 POPULATION_SUBSCRIBE_RETRY_MS = 5000;
 constexpr uint32 POPULATION_HEARTBEAT_MS = 30000;
+constexpr uint32 SOCIAL_REFRESH_MS = 60000;
+constexpr uint32 SOCIAL_PRESENCE_TTL_MS = 180000;
+constexpr size_t SOCIAL_MAX_BOTS = 256;
 
 struct PopulationCommand
 {
@@ -115,6 +121,89 @@ struct AgentPopulation::Impl
     std::deque<std::string> resultCacheOrder;
     uint32 lastSnapshotMs = 0;
     uint32 lastHeartbeatMs = 0;
+    uint32 lastSocialManifestMs = 0;
+    uint32 lastSocialPresenceMs = 0;
+    std::string socialManifestRequest;
+    int64 lastSocialObservation = 0;
+    std::unordered_set<uint32> socialManagedBots;
+    std::unordered_set<uint32> socialPreferredBots;
+    std::unordered_map<uint32, uint32> socialBotAccounts;
+    std::unordered_set<uint32> socialPreferredAccounts;
+
+    void HandleSocialManifest(std::string const& requestId)
+    {
+        uint32 const now = getMSTime();
+        if (!sPlayerbotAIConfig.agentBridgeSocialProgressionEnabled ||
+            (lastSocialManifestMs && getMSTimeDiff(lastSocialManifestMs, now) < SOCIAL_REFRESH_MS))
+            return;
+        lastSocialManifestMs = now;
+        std::unordered_set<uint32> managed;
+        std::unordered_map<uint32, uint32> botAccounts;
+        size_t inspectedAccounts = 0;
+        std::ostringstream payload;
+        payload << "{\"realm_id\":" << realm.Id.Realm << ",\"bot_guids\":[";
+        for (uint32 account : LoadBotAccountIds())
+        {
+            if (inspectedAccounts++ >= SOCIAL_MAX_BOTS)
+                break;
+            CharacterDatabasePreparedStatement* statement =
+                CharacterDatabase.GetPreparedStatement(CHAR_SEL_CHARS_BY_ACCOUNT_ID);
+            statement->SetData(0, account);
+            PreparedQueryResult result = CharacterDatabase.Query(statement);
+            if (!result)
+                continue;
+            do
+            {
+                uint32 const guid = result->Fetch()[0].Get<uint32>();
+                if (!managed.insert(guid).second)
+                    continue;
+                botAccounts[guid] = account;
+                if (managed.size() > 1)
+                    payload << ",";
+                payload << guid;
+            } while (managed.size() < SOCIAL_MAX_BOTS && result->NextRow());
+            if (managed.size() >= SOCIAL_MAX_BOTS)
+                break;
+        }
+        payload << "],\"partial\":"
+                << (managed.size() >= SOCIAL_MAX_BOTS || inspectedAccounts > SOCIAL_MAX_BOTS ? "true" : "false") << "}";
+        socialManagedBots = std::move(managed);
+        socialBotAccounts = std::move(botAccounts);
+        socialManifestRequest = requestId;
+        PublishEvent("social_population_manifest", requestId, payload.str());
+    }
+
+    void HandleSocialPreferences(boost::property_tree::ptree const& arguments)
+    {
+        if (!sPlayerbotAIConfig.agentBridgeSocialProgressionEnabled)
+            return;
+        int64 const now =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
+        int64 const observed = arguments.get<int64>("observed_at", 0);
+        if (GetTreeString(arguments, "manifest_request") != socialManifestRequest ||
+            observed <= lastSocialObservation || observed > now || now - observed > SOCIAL_PRESENCE_TTL_MS)
+            return;
+        auto guids = arguments.get_child_optional("preferred_guids");
+        if (!guids || guids->size() > SOCIAL_MAX_BOTS)
+            return;
+        std::unordered_set<uint32> preferred;
+        std::unordered_set<uint32> preferredAccounts;
+        for (auto const& entry : *guids)
+        {
+            uint32 const guid = entry.second.get_value<uint32>();
+            if (!socialManagedBots.contains(guid))
+                return;
+            preferred.insert(guid);
+            preferredAccounts.insert(socialBotAccounts.at(guid));
+        }
+        socialPreferredBots = std::move(preferred);
+        socialPreferredAccounts = std::move(preferredAccounts);
+        lastSocialObservation = observed;
+        lastSocialPresenceMs = getMSTime() - static_cast<uint32>(now - observed);
+        LOG_DEBUG("playerbots.agent", "Social scheduler accepted {} preferred bots from manifest {}",
+                  socialPreferredBots.size(), socialManifestRequest);
+    }
 
     bool PublishEvent(std::string const& type, std::string const& requestId, std::string const& payload)
     {
@@ -392,6 +481,10 @@ struct AgentPopulation::Impl
                 HandleCreateBot(arguments, command.requestId);
             else if (command.operation == "population_snapshot")
                 HandlePopulationSnapshot(command.requestId);
+            else if (command.operation == "social_population_manifest")
+                HandleSocialManifest(command.requestId);
+            else if (command.operation == "social_schedule_preferences")
+                HandleSocialPreferences(arguments);
             else
                 CacheAndPublish(command.requestId,
                                 "{\"status\":\"rejected\",\"reason\":\"unsupported population operation\"}");
@@ -457,6 +550,22 @@ bool AgentPopulation::IsEnabled() const
 {
     return agent_bridge::SidecarSupported() && sPlayerbotAIConfig.agentBridgeEnabled &&
            sPlayerbotAIConfig.agentBridgePopulationEnabled;
+}
+
+bool AgentPopulation::PrefersOnline(uint32 botGuid) const
+{
+    return IsEnabled() && sPlayerbotAIConfig.agentBridgeSocialProgressionEnabled && m_impl &&
+           m_impl->lastSocialPresenceMs &&
+           getMSTimeDiff(m_impl->lastSocialPresenceMs, getMSTime()) <= SOCIAL_PRESENCE_TTL_MS &&
+           m_impl->socialPreferredBots.contains(botGuid);
+}
+
+bool AgentPopulation::PrefersOnlineAccount(uint32 accountId) const
+{
+    return IsEnabled() && sPlayerbotAIConfig.agentBridgeSocialProgressionEnabled && m_impl &&
+           m_impl->lastSocialPresenceMs &&
+           getMSTimeDiff(m_impl->lastSocialPresenceMs, getMSTime()) <= SOCIAL_PRESENCE_TTL_MS &&
+           m_impl->socialPreferredAccounts.contains(accountId);
 }
 
 void AgentPopulation::Update(uint32 diff)

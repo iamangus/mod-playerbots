@@ -147,6 +147,7 @@ func systemPrompt(profile string) string {
 		"objective rather than repeating the same failed destination. Chat does not move you or accept quests: use " +
 		"the corresponding task tools, and do not claim an action succeeded without observed results. " +
 		"When a player asks you to lead, choose a concrete destination or quest/combat task; following the player is not leading. " +
+		"When social_progression is present, use its authoritative friend presence, level band and region preferences. Keep independent goals in the friend's general zone; this is not a follow order. Favor low-XP work while ahead or after confirmed friends-offline grace, normal level-appropriate progression while behind, and never interrupt active group obligations for pacing. Unknown or stale presence is not logout. A friendship comes from an explicit human friend-list relationship, never a casual whisper or proximity. " +
 		"Grouped non-leader bots assist their leader automatically; if you are the group leader, choose the group's actual " +
 		"task (destination, quest, or combat) when the player asks you to lead — never pick assist_leader for yourself. " +
 		"Any message addressed to you from a real player must get a visible send_chat reply in the same channel, even if " +
@@ -237,6 +238,72 @@ func (client *modelClient) generateProfileSync(race, class uint32, role, reason 
 }
 
 var agentTools = []map[string]any{
+	functionTool("negotiate_crafting_trade", "Continue an active craft_item trade-discovery parent after a seller replies. Interpret recent chat to agree a total price within the parent's budget, then choose an observed nearby seller and whisper message asking them to open the trade at the meeting. The parent meets them, opens their pending trade, sets the exact agreed money once, waits for their acceptance, validates all requested material stacks and verifies the transfer. No inventory inspection of other players, automatic counteroffers or uncertain replay.", map[string]any{
+		"player_name": map[string]any{"type": "string"}, "price_copper": map[string]any{"type": "integer", "minimum": 0}, "message": map[string]any{"type": "string", "minLength": 1, "maxLength": 255},
+	}, []string{"player_name", "price_copper", "message"}),
+	functionTool("bid_auction", "Place one exact bid below buyout on a fresh observed listing, with explicit bid_copper and maximum total budget. Native listing identity/minimum price and escrow deduction must be verified. Submission is not inventory. A persisted pending_auction_bids journal tracks the win/refund; no automatic rebidding. Up to 8 outstanding bids. Native proceeds are checked opportunistically at observed mailboxes when otherwise idle.", map[string]any{
+		"auction_id": map[string]any{"type": "integer", "minimum": 1}, "item_id": map[string]any{"type": "integer", "minimum": 1}, "bid_copper": map[string]any{"type": "integer", "minimum": 1}, "max_spend_copper": map[string]any{"type": "integer", "minimum": 1},
+	}, []string{"auction_id", "item_id", "bid_copper", "max_spend_copper"}),
+	functionTool("collect_auction_proceeds", "When idle, check one pending bid's exact auction-won attachment or outbid/cancellation refund at an observed mailbox. Native mail identity, quantity and escrow refund must match the journal. Won items additionally require correlated inventory. Empty/delayed mail does not prove a loss, refund or win and never authorizes rebidding.", map[string]any{
+		"auction_id": map[string]any{"type": "integer", "minimum": 1}, "mailbox_guid": map[string]any{"type": "string"},
+	}, []string{"auction_id", "mailbox_guid"}),
+	functionTool("search_auctions", "Inspect bounded pages for up to 8 distinct item_ids at an observed auctioneer. A persistent parent advances native page children without model calls. At most 16 pages per item and 160 cached offers per item; cached_auction_items.partial marks retained partial evidence. Fresh pages for different materials are retained independently. No spending.", map[string]any{
+		"npc_guid": map[string]any{"type": "string"}, "item_ids": map[string]any{"type": "array", "minItems": 1, "maxItems": 8, "items": map[string]any{"type": "integer", "minimum": 1}},
+	}, []string{"npc_guid", "item_ids"}),
+	functionTool("inspect_auctions", "Travel to an observed nearby auctioneer and inspect one bounded public-book page for item_id. Use auctions.next_cursor while auctions.more is true; prices are only observed hints and purchases revalidate them. This replaces ordinary work, not an active crafting/purchase parent. It never spends money.", map[string]any{
+		"npc_guid": map[string]any{"type": "string"}, "item_id": map[string]any{"type": "integer", "minimum": 1}, "cursor": map[string]any{"type": "integer", "minimum": 0},
+	}, []string{"npc_guid", "item_id"}),
+	functionTool("buy_auction", "Acquire count additional items via buyouts from a fresh observed auction page, under one explicit total copper budget. Requires an observed nearby auctioneer and mailbox. Whole auction stacks may exceed count. Purchase, exact won-mail collection, and correlated inventory checks run as persistent children. Bids and uncertain repurchases are not supported.", map[string]any{
+		"item_id": map[string]any{"type": "integer", "minimum": 1}, "count": map[string]any{"type": "integer", "minimum": 1, "maximum": 40}, "max_spend_copper": map[string]any{"type": "integer", "minimum": 0},
+	}, []string{"item_id", "count", "max_spend_copper"}),
+	functionTool("inspect_crafting_recipes", "Request live known crafting recipes without replacing the current task. Browse 40-recipe pages using offset and crafting_recipe_page.next_offset, or inspect item_id with its known subcraft dependencies. Do not combine nonzero offset with item_id. Focused results are bounded; dependencies_truncated warns about omitted work. Omit both arguments to return to the first general page.", map[string]any{
+		"offset":  map[string]any{"type": "integer", "minimum": 0, "maximum": 4096},
+		"item_id": map[string]any{"type": "integer", "minimum": 1},
+	}, nil),
+	functionTool("craft_item", "Produce count additional items from an observed deterministic recipe with known subcraft dependencies. Deficits use vendors, actual-loot gathering evidence (including bounded ordinary travel to fresh same-map observed sites), or cached auction offers with an observed mailbox. Missing auction evidence can nest bounded multi-item search at an observed auctioneer. Purchases share one explicit max_spend_copper budget. An already negotiated partner-accepted bundle of up to 6 material types and 40 items may instead use that budget; no bot items or enchant services are given away. Auction children collect exact won mail. All children check correlated inventory. No free reagents or replay of uncertain spending/acceptance.", map[string]any{
+		"procurement":           map[string]any{"type": "string", "enum": []string{"auto", "trade"}, "description": "Trade mode starts a ten-minute seller-discovery/negotiation child; use chat and negotiate_crafting_trade after a seller replies."},
+		"trade_request_message": map[string]any{"type": "string", "minLength": 1, "maxLength": 255},
+		"trade_request_channel": map[string]any{"type": "string", "enum": []string{"trade", "say", "world"}},
+		"item_id":               map[string]any{"type": "integer", "minimum": 1},
+		"count":                 map[string]any{"type": "integer", "minimum": 1, "maximum": 40},
+		"max_spend_copper":      map[string]any{"type": "integer", "minimum": 0},
+	}, []string{"item_id", "count"}),
+	functionTool("send_mail", "Visit an observed mailbox and submit one ordinary non-COD mail to recipient. Optionally send money_copper and one whole stack identified by item_guid from tradeable_stacks. Explicit max_spend_copper must cover the gift plus 30 copper postage. Submission is verified, not recipient delivery; never automatically replay an uncertain send.", map[string]any{
+		"mailbox_guid":     map[string]any{"type": "string"},
+		"recipient":        map[string]any{"type": "string", "minLength": 1, "maxLength": 48},
+		"subject":          map[string]any{"type": "string", "minLength": 1, "maxLength": 128},
+		"body":             map[string]any{"type": "string", "maxLength": 4096},
+		"item_guid":        map[string]any{"type": "string"},
+		"money_copper":     map[string]any{"type": "integer", "minimum": 0},
+		"max_spend_copper": map[string]any{"type": "integer", "minimum": 30},
+	}, []string{"mailbox_guid", "recipient", "subject", "max_spend_copper"}),
+	functionTool("discover_flight_path", "Visit an observed flight master and discover its node using ordinary taxi interaction.", map[string]any{
+		"npc_guid": map[string]any{"type": "string"},
+	}, []string{"npc_guid"}),
+	functionTool("take_flight", "Fly from an observed flight master to a known direct destination from its taxi_routes, paying the normal fare within an explicit budget. The loop completes at arrival, not takeoff.", map[string]any{
+		"npc_guid":         map[string]any{"type": "string"},
+		"destination_node": map[string]any{"type": "integer", "minimum": 1},
+		"max_spend_copper": map[string]any{"type": "integer", "minimum": 0},
+	}, []string{"npc_guid", "destination_node", "max_spend_copper"}),
+	functionTool("collect_mail", "Visit an observed mailbox and collect at most count delivered non-COD attachments or money transfers. Does not delete, return, send, or pay COD mail; each native transfer is verified on the world thread.", map[string]any{
+		"mailbox_guid": map[string]any{"type": "string"},
+		"count":        map[string]any{"type": "integer", "minimum": 1, "maximum": 40},
+	}, []string{"mailbox_guid"}),
+	functionTool("fish_count", "Catch and acquire count fishing loot results at the current nearby water. Requires learned fishing and an equipped fishing pole. The local loop faces water, casts, waits for its own bobber's bite, reels, and verifies inventory gain. No free equipment or skill is granted.", map[string]any{
+		"count": map[string]any{"type": "integer", "minimum": 1, "maximum": 40},
+	}, []string{"count"}),
+	functionTool("visit_vendor", "Visit an observed NPC to repair equipped gear, sell at most count grey junk stacks, or buy count vendor bundles of item_id. Spending operations require an explicit copper budget; the native loop rechecks eligibility and never exceeds that budget.", map[string]any{
+		"npc_guid":         map[string]any{"type": "string"},
+		"service":          map[string]any{"type": "string", "enum": []string{"repair", "sell_junk", "buy"}},
+		"item_id":          map[string]any{"type": "integer", "minimum": 1},
+		"count":            map[string]any{"type": "integer", "minimum": 1, "maximum": 40},
+		"max_spend_copper": map[string]any{"type": "integer", "minimum": 0},
+	}, []string{"npc_guid", "service"}),
+	functionTool("train_class_spells", "Visit an observed class trainer and learn at most count eligible class spells within an explicit copper budget. Does not choose or learn professions.", map[string]any{
+		"npc_guid":         map[string]any{"type": "string"},
+		"count":            map[string]any{"type": "integer", "minimum": 1, "maximum": 40},
+		"max_spend_copper": map[string]any{"type": "integer", "minimum": 0},
+	}, []string{"npc_guid", "max_spend_copper"}),
 	functionTool("send_chat", "Send an ordinary visible in-game chat message.", map[string]any{
 		"channel": map[string]any{"type": "string", "enum": []string{"say", "yell", "whisper", "party", "raid", "guild", "officer", "world", "general", "trade", "lfg", "local_defense", "world_defense", "guild_recruitment"}},
 		"message": map[string]any{"type": "string"}, "recipient": map[string]any{"type": "string"},
@@ -288,6 +355,9 @@ var agentTools = []map[string]any{
 		"count":          map[string]any{"type": "integer"},
 		"radius":         map[string]any{"type": "number"},
 	}, []string{"creature_entry", "count"}),
+	functionTool("loot_nearby", "Loot a bounded batch of observed nearby corpses (at most 12), nearest first. Does not attack, wander, skin, or gather. Completion reports corpses processed, not items gained.", map[string]any{
+		"radius": map[string]any{"type": "number", "minimum": 1, "maximum": 100},
+	}, nil),
 	functionTool("gather_resources", "Gather nearby herb or ore nodes in a loop.", map[string]any{
 		"profession": map[string]any{"type": "string", "enum": []string{"herbalism", "mining"}},
 		"count":      map[string]any{"type": "integer"},

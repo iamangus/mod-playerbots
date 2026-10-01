@@ -48,6 +48,12 @@ bool AgentMoveToTargetAction::Execute(Event event)
     return MoveToTarget(target, distance);
 }
 
+bool AgentMoveToTargetAction::MoveToPosition(uint32 mapId, float x, float y, float z)
+{
+    // Coordinate goals use ordinary native navigation, never teleport/map changes.
+    return bot && bot->GetMapId() == mapId && MoveTo(mapId, x, y, z, false, false, true);
+}
+
 bool AgentMoveToTargetAction::MoveToTarget(WorldObject* target, float distance)
 {
     if (!target || !target->IsInWorld() || target->GetMap() != bot->GetMap() || !IsMovingAllowed(target))

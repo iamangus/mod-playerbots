@@ -147,11 +147,12 @@ var classNames = map[uint32]string{
 }
 
 type populationCounts struct {
-	SnapshotAt int64             `json:"snapshot_at"`
-	Total      uint64            `json:"total"`
-	ByRace     map[uint32]uint64 `json:"by_race,omitempty"`
-	ByClass    map[uint32]uint64 `json:"by_class,omitempty"`
-	Zones      map[uint32]uint64 `json:"zones,omitempty"`
+	SnapshotAt  int64                        `json:"snapshot_at"`
+	Total       uint64                       `json:"total"`
+	ByRace      map[uint32]uint64            `json:"by_race,omitempty"`
+	ByClass     map[uint32]uint64            `json:"by_class,omitempty"`
+	ByRaceClass map[uint32]map[uint32]uint64 `json:"by_race_class,omitempty"`
+	Zones       map[uint32]uint64            `json:"zones,omitempty"`
 }
 
 type populationReservation struct {
@@ -434,10 +435,14 @@ func parsePopulationSnapshot(payload json.RawMessage) *populationCounts {
 		return nil
 	}
 	counts := &populationCounts{Total: decoded.Total, ByRace: map[uint32]uint64{},
-		ByClass: map[uint32]uint64{}, Zones: map[uint32]uint64{}}
+		ByClass: map[uint32]uint64{}, ByRaceClass: map[uint32]map[uint32]uint64{}, Zones: map[uint32]uint64{}}
 	for _, row := range decoded.Counts {
 		counts.ByRace[row.Race] += row.Count
 		counts.ByClass[row.Class] += row.Count
+		if counts.ByRaceClass[row.Race] == nil {
+			counts.ByRaceClass[row.Race] = map[uint32]uint64{}
+		}
+		counts.ByRaceClass[row.Race][row.Class] += row.Count
 	}
 	if counts.Total == 0 {
 		for _, row := range decoded.Counts {
@@ -564,6 +569,12 @@ func (m *populationManager) effectiveCounts() *populationCounts {
 			counts.Total++
 			counts.ByRace[r.Race]++
 			counts.ByClass[r.Class]++
+			if counts.ByRaceClass != nil {
+				if counts.ByRaceClass[r.Race] == nil {
+					counts.ByRaceClass[r.Race] = map[uint32]uint64{}
+				}
+				counts.ByRaceClass[r.Race][r.Class]++
+			}
 			counts.Zones[r.Zone]++
 		}
 		cursor = next
@@ -699,6 +710,28 @@ func (m *populationManager) chooseRaceClass(zone uint32, counts *populationCount
 		}
 		return (target - float64(counts.ByClass[class])) / target
 	}
+	localClassDeficit := func(race, class uint32) float64 {
+		if zone == 0 || counts.ByRaceClass == nil {
+			return classDeficit(class) // Compatibility with cached pre-upgrade snapshots.
+		}
+		eligible := validRaceClasses[race]
+		weightSum := 0.0
+		for _, candidate := range eligible {
+			weightSum += m.cfg.classWeights[candidate]
+		}
+		share := 1.0 / float64(len(eligible))
+		if weightSum > 0 {
+			share = m.cfg.classWeights[class] / weightSum
+		}
+		if share <= 0 {
+			return math.Inf(-1)
+		}
+		// A starter cohort must stay diverse within its race even when
+		// realm-wide deficits strongly favor one class. Include the next
+		// allocation in the target to avoid zero denominators for an empty race.
+		target := share * float64(counts.ByRace[race]+1)
+		return (target - float64(counts.ByRaceClass[race][class])) / target
+	}
 
 	worstRace, worstRaceValue := uint32(0), math.Inf(-1)
 	for _, race := range races {
@@ -723,10 +756,10 @@ func (m *populationManager) chooseRaceClass(zone uint32, counts *populationCount
 		return 0, 0, false
 	}
 
-	if worstRaceValue >= worstClassValue {
+	if zone != 0 || worstRaceValue >= worstClassValue {
 		bestClass, bestValue := uint32(0), math.Inf(-1)
 		for _, class := range validRaceClasses[worstRace] {
-			if value := classDeficit(class); value > bestValue {
+			if value := localClassDeficit(worstRace, class); value > bestValue {
 				bestClass, bestValue = class, value
 			}
 		}

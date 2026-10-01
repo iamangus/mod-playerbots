@@ -29,6 +29,8 @@ public:
     bool IsConfigured(PlayerbotAI* botAI) const;
     bool IsEnabled(PlayerbotAI* botAI) const;
     bool IsSendingChat() const;
+    void OnLootResponse(WorldPacket const& packet);
+    void OnAuctionBidderNotification(WorldPacket const& packet);
     void Update(PlayerbotAI* botAI, uint32_t elapsed);
     void Stop(PlayerbotAI* botAI);
     void OnChatMessage(PlayerbotAI* botAI, uint8_t type, uint32_t language, ObjectGuid sender,

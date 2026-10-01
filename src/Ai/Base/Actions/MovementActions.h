@@ -92,6 +92,7 @@ public:
     AgentMoveToTargetAction(PlayerbotAI* botAI) : MovementAction(botAI, "agent move to target") {}
     bool Execute(Event event) override;
     bool MoveToTarget(WorldObject* target, float distance);
+    bool MoveToPosition(uint32 mapId, float x, float y, float z);
 };
 
 class FleeAction : public MovementAction

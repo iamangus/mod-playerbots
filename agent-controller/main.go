@@ -46,34 +46,42 @@ const (
 )
 
 type config struct {
-	natsURL          string
-	redisURL         string
-	subjectPrefix    string
-	shardID          uint32
-	shardCount       uint32
-	modelEndpoint    string
-	modelAPIKey      string
-	modelName        string
-	requestTimeout   time.Duration
-	decisionInterval time.Duration
-	maxTokens        uint32
-	reasoningEffort  string
+	natsURL            string
+	redisURL           string
+	subjectPrefix      string
+	shardID            uint32
+	shardCount         uint32
+	modelEndpoint      string
+	modelAPIKey        string
+	modelName          string
+	requestTimeout     time.Duration
+	decisionInterval   time.Duration
+	maxTokens          uint32
+	reasoningEffort    string
+	socialProgression  bool
+	socialRealm        uint32
+	socialOfflineGrace time.Duration
+	roadPreference     bool
+	roadCorridors      []roadCorridor
 }
 
 func loadConfig() (config, error) {
 	cfg := config{
-		natsURL:          envOr("TC9_NATS_URL", "nats://127.0.0.1:4222"),
-		redisURL:         envOr("AGENT_STATE_REDIS_URL", "redis://127.0.0.1:6379/0"),
-		subjectPrefix:    envOr("AGENT_SUBJECT_PREFIX", "playerbots.v1"),
-		shardID:          envUint("AGENT_SHARD_ID", statefulOrdinal(os.Getenv("HOSTNAME"))),
-		shardCount:       envUint("AGENT_SHARD_COUNT", 1),
-		modelEndpoint:    strings.TrimSpace(os.Getenv("LLM_ENDPOINT")),
-		modelAPIKey:      strings.TrimSpace(os.Getenv("LLM_API_KEY")),
-		modelName:        strings.TrimSpace(os.Getenv("LLM_MODEL")),
-		requestTimeout:   envDuration("LLM_REQUEST_TIMEOUT", 30*time.Second),
-		decisionInterval: envDuration("AGENT_DECISION_INTERVAL", 30*time.Minute),
-		maxTokens:        envUint("LLM_MAX_TOKENS", 512),
-		reasoningEffort:  strings.TrimSpace(os.Getenv("LLM_REASONING_EFFORT")),
+		natsURL:            envOr("TC9_NATS_URL", "nats://127.0.0.1:4222"),
+		redisURL:           envOr("AGENT_STATE_REDIS_URL", "redis://127.0.0.1:6379/0"),
+		subjectPrefix:      envOr("AGENT_SUBJECT_PREFIX", "playerbots.v1"),
+		shardID:            envUint("AGENT_SHARD_ID", statefulOrdinal(os.Getenv("HOSTNAME"))),
+		shardCount:         envUint("AGENT_SHARD_COUNT", 1),
+		modelEndpoint:      strings.TrimSpace(os.Getenv("LLM_ENDPOINT")),
+		modelAPIKey:        strings.TrimSpace(os.Getenv("LLM_API_KEY")),
+		modelName:          strings.TrimSpace(os.Getenv("LLM_MODEL")),
+		requestTimeout:     envDuration("LLM_REQUEST_TIMEOUT", 30*time.Second),
+		decisionInterval:   envDuration("AGENT_DECISION_INTERVAL", 30*time.Minute),
+		maxTokens:          envUint("LLM_MAX_TOKENS", 512),
+		reasoningEffort:    strings.TrimSpace(os.Getenv("LLM_REASONING_EFFORT")),
+		socialProgression:  envBool("AGENT_SOCIAL_PROGRESSION", false),
+		socialRealm:        envUint("AGENT_SOCIAL_REALM", 1),
+		socialOfflineGrace: envDuration("AGENT_SOCIAL_OFFLINE_GRACE", 10*time.Minute),
 	}
 	if cfg.modelEndpoint == "" || cfg.modelName == "" {
 		return config{}, errors.New("LLM_ENDPOINT and LLM_MODEL are required")
@@ -86,6 +94,14 @@ func loadConfig() (config, error) {
 	}
 	if cfg.maxTokens > 2048 {
 		cfg.maxTokens = 2048
+	}
+	cfg.roadPreference = envBool("AGENT_ROAD_PREFERENCE", false)
+	if cfg.roadPreference {
+		var err error
+		cfg.roadCorridors, err = loadRoadCorridors(strings.TrimSpace(os.Getenv("AGENT_ROAD_CORRIDORS_FILE")))
+		if err != nil {
+			return config{}, err
+		}
 	}
 	return cfg, nil
 }
@@ -168,6 +184,8 @@ type event struct {
 }
 
 type decisionJob struct {
+	traceID  string
+	queuedAt time.Time
 	actor    *actor
 	revision uint64
 	profile  string
@@ -179,9 +197,13 @@ type decisionJob struct {
 }
 
 type decisionResult struct {
-	revision uint64
-	call     *toolCall
-	err      error
+	traceID      string
+	trigger      string
+	queueWait    time.Duration
+	modelElapsed time.Duration
+	revision     uint64
+	call         *toolCall
+	err          error
 }
 
 type command struct {
@@ -233,6 +255,45 @@ type availableQuest struct {
 	GiverGUID string `json:"giver_guid"`
 }
 
+type corpseInfo struct {
+	GUID     string    `json:"guid"`
+	Name     string    `json:"name"`
+	Distance float64   `json:"distance"`
+	Position []float64 `json:"position"`
+}
+
+type npcInfo struct {
+	GUID         string            `json:"guid"`
+	Name         string            `json:"name"`
+	Entry        uint32            `json:"entry"`
+	NPCFlags     uint32            `json:"npc_flags"`
+	QuestGiver   bool              `json:"quest_giver"`
+	Distance     float64           `json:"distance"`
+	ClassTrainer bool              `json:"class_trainer"`
+	VendorOffers []vendorOfferInfo `json:"vendor_offers,omitempty"`
+	TaxiNodeID   uint32            `json:"taxi_node_id,omitempty"`
+	TaxiRoutes   []taxiRouteInfo   `json:"taxi_routes,omitempty"`
+}
+
+type taxiRouteInfo struct {
+	ToNode      uint32 `json:"to_node"`
+	Name        string `json:"name"`
+	PriceCopper uint32 `json:"price_copper"`
+}
+
+type vendorOfferInfo struct {
+	ItemID      uint32 `json:"item_id"`
+	Name        string `json:"name"`
+	BundleCount uint32 `json:"bundle_count"`
+	PriceCopper uint32 `json:"price_copper"`
+}
+
+type mailboxInfo struct {
+	GUID     string  `json:"guid"`
+	Name     string  `json:"name"`
+	Distance float64 `json:"distance"`
+}
+
 type snapshot struct {
 	SchemaVersion int `json:"schema_version"`
 	Bot           struct {
@@ -248,6 +309,7 @@ type snapshot struct {
 		CanMove            bool      `json:"can_move"`
 		Experience         uint32    `json:"experience"`
 		InCombat           bool      `json:"in_combat"`
+		InFlight           bool      `json:"in_flight"`
 		MapID              uint32    `json:"map_id"`
 		ZoneID             uint32    `json:"zone_id"`
 		Position           []float64 `json:"position"`
@@ -270,8 +332,15 @@ type snapshot struct {
 			IsBot bool   `json:"is_bot"`
 		} `json:"group_members"`
 	} `json:"bot"`
-	Professions map[string]uint32 `json:"professions"`
-	Inventory   struct {
+	Professions        map[string]uint32        `json:"professions"`
+	CraftingRecipes    []craftRecipeInfo        `json:"crafting_recipes"`
+	CraftingInventory  []craftReagent           `json:"crafting_inventory"`
+	CraftingRecipePage *craftRecipePage         `json:"crafting_recipe_page,omitempty"`
+	Auctions           *auctionObservation      `json:"auctions,omitempty"`
+	CachedAuctionItems []auctionCatalogSummary  `json:"cached_auction_items,omitempty"`
+	PendingAuctionBids []auctionBid             `json:"pending_auction_bids,omitempty"`
+	SocialProgression  *socialProgressionPolicy `json:"social_progression,omitempty"`
+	Inventory          struct {
 		MoneyCopper     uint32          `json:"money_copper"`
 		TradeableStacks json.RawMessage `json:"tradeable_stacks,omitempty"`
 		Items           []struct {
@@ -292,23 +361,20 @@ type snapshot struct {
 		Position  []float64 `json:"position"`
 	} `json:"nearby_creatures"`
 	NearbyGameObjects []struct {
-		GUID        string    `json:"guid"`
-		Entry       uint32    `json:"entry"`
-		Name        string    `json:"name"`
-		GatherSkill uint32    `json:"gather_skill"`
-		CanGather   bool      `json:"can_gather"`
-		Distance    float64   `json:"distance"`
-		Position    []float64 `json:"position"`
+		GUID              string    `json:"guid"`
+		Entry             uint32    `json:"entry"`
+		Name              string    `json:"name"`
+		GatherSkill       uint32    `json:"gather_skill"`
+		CanGather         bool      `json:"can_gather"`
+		Distance          float64   `json:"distance"`
+		Position          []float64 `json:"position"`
+		ObservedDropItems []uint32  `json:"observed_drop_items,omitempty"`
 	} `json:"nearby_game_objects"`
-	NearbyPlayers []playerInfo `json:"nearby_players"`
-	NearbyNPCs    []struct {
-		GUID       string  `json:"guid"`
-		Name       string  `json:"name"`
-		Entry      uint32  `json:"entry"`
-		QuestGiver bool    `json:"quest_giver"`
-		Distance   float64 `json:"distance"`
-	} `json:"nearby_npcs"`
-	TravelTarget *struct {
+	NearbyCorpses   []corpseInfo  `json:"nearby_corpses"`
+	NearbyMailboxes []mailboxInfo `json:"nearby_mailboxes"`
+	NearbyPlayers   []playerInfo  `json:"nearby_players"`
+	NearbyNPCs      []npcInfo     `json:"nearby_npcs"`
+	TravelTarget    *struct {
 		DestinationName string    `json:"destination_name"`
 		IsTraveling     bool      `json:"is_traveling"`
 		IsWorking       bool      `json:"is_working"`
@@ -319,50 +385,101 @@ type snapshot struct {
 }
 
 type task struct {
-	ID                  string    `json:"id"`
-	Kind                string    `json:"kind"`
-	TargetName          string    `json:"target_name,omitempty"`
-	TargetGUID          string    `json:"target_guid,omitempty"`
-	DestinationName     string    `json:"destination_name,omitempty"`
-	GoalDistance        float64   `json:"goal_distance,omitempty"`
-	QuestID             uint32    `json:"quest_id,omitempty"`
-	CreatureEntry       uint32    `json:"creature_entry,omitempty"`
-	Profession          string    `json:"profession,omitempty"`
-	GoalCount           uint32    `json:"goal_count"`
-	Completed           uint32    `json:"completed"`
-	Radius              float64   `json:"radius,omitempty"`
-	MapID               uint32    `json:"map_id,omitempty"`
-	AreaCenter          []float64 `json:"area_center,omitempty"`
-	ObjectiveIndex      uint32    `json:"objective_index,omitempty"`
-	ObjectiveCount      uint32    `json:"objective_count,omitempty"`
-	Phase               string    `json:"phase"`
-	OperationID         string    `json:"operation_id,omitempty"`
-	Retries             uint32    `json:"retries,omitempty"`
-	LastProgressUTC     time.Time `json:"last_progress_utc"`
-	LastScanUTC         time.Time `json:"last_scan_utc,omitempty"`
-	LastTargetHealthPct uint32    `json:"last_target_health_pct,omitempty"`
-	LastTravelPosition  []float64 `json:"last_travel_position,omitempty"`
+	ID                           string          `json:"id"`
+	Kind                         string          `json:"kind"`
+	TargetName                   string          `json:"target_name,omitempty"`
+	TargetGUID                   string          `json:"target_guid,omitempty"`
+	LootTargets                  []string        `json:"loot_targets,omitempty"`
+	ServiceOperation             string          `json:"service_operation,omitempty"`
+	ServiceArguments             json.RawMessage `json:"service_arguments,omitempty"`
+	CraftSteps                   []craftingStep  `json:"craft_steps,omitempty"`
+	CraftStepIndex               uint32          `json:"craft_step_index,omitempty"`
+	CraftStepCasts               uint32          `json:"craft_step_casts,omitempty"`
+	CraftItemID                  uint32          `json:"craft_item_id,omitempty"`
+	CraftInitialCount            uint32          `json:"craft_initial_count,omitempty"`
+	CraftSnapshotID              string          `json:"craft_snapshot_id,omitempty"`
+	CraftObservationAttempts     uint32          `json:"craft_observation_attempts,omitempty"`
+	CraftSupplies                []craftSupply   `json:"craft_supplies,omitempty"`
+	CraftSupplyIndex             uint32          `json:"craft_supply_index,omitempty"`
+	CraftGatherBefore            uint32          `json:"craft_gather_before,omitempty"`
+	CraftGatherAwaiting          bool            `json:"craft_gather_awaiting,omitempty"`
+	CraftGatherTried             []string        `json:"craft_gather_tried,omitempty"`
+	CraftGatherSitesTried        []string        `json:"craft_gather_sites_tried,omitempty"`
+	CraftAuctionReceipt          string          `json:"craft_auction_receipt,omitempty"`
+	CraftTradeReceived           bool            `json:"craft_trade_received,omitempty"`
+	CraftTradeStage              string          `json:"craft_trade_stage,omitempty"`
+	CraftTradeDeadline           time.Time       `json:"craft_trade_deadline,omitempty"`
+	CraftTradePrice              uint32          `json:"craft_trade_price,omitempty"`
+	CraftTradeOpened             bool            `json:"craft_trade_opened,omitempty"`
+	CraftTradePriced             bool            `json:"craft_trade_priced,omitempty"`
+	BidAuctionID                 uint32          `json:"bid_auction_id,omitempty"`
+	AuctionProceedsOutcome       uint32          `json:"auction_proceeds_outcome,omitempty"`
+	AuctionProceedsBaselineReady bool            `json:"auction_proceeds_baseline_ready,omitempty"`
+	AuctionProceedsPassive       bool            `json:"auction_proceeds_passive,omitempty"`
+	AuctionSearchItems           []uint32        `json:"auction_search_items,omitempty"`
+	AuctionSearchIndex           uint32          `json:"auction_search_index,omitempty"`
+	AuctionSearchCursor          uint32          `json:"auction_search_cursor,omitempty"`
+	AuctionSearchPages           uint32          `json:"auction_search_pages,omitempty"`
+	AuctionSearchMore            bool            `json:"auction_search_more,omitempty"`
+	AuctionSearchReceipt         string          `json:"auction_search_receipt,omitempty"`
+	CraftNeedsSupplies           bool            `json:"craft_needs_supplies,omitempty"`
+	CraftMaterialGoals           []craftReagent  `json:"craft_material_goals,omitempty"`
+	CraftAcquisitionBudget       uint32          `json:"craft_acquisition_budget,omitempty"`
+	CraftAuctionCollect          bool            `json:"craft_auction_collect,omitempty"`
+	CraftObservedStock           []craftReagent  `json:"craft_observed_stock"`
+	DestinationName              string          `json:"destination_name,omitempty"`
+	RoadCorridorID               string          `json:"road_corridor_id,omitempty"`
+	RoadPoints                   [][]float64     `json:"road_points,omitempty"`
+	RoadPoint                    uint32          `json:"road_point,omitempty"`
+	GoalDistance                 float64         `json:"goal_distance,omitempty"`
+	QuestID                      uint32          `json:"quest_id,omitempty"`
+	CreatureEntry                uint32          `json:"creature_entry,omitempty"`
+	Profession                   string          `json:"profession,omitempty"`
+	GoalCount                    uint32          `json:"goal_count"`
+	Completed                    uint32          `json:"completed"`
+	Radius                       float64         `json:"radius,omitempty"`
+	MapID                        uint32          `json:"map_id,omitempty"`
+	AreaCenter                   []float64       `json:"area_center,omitempty"`
+	ObjectiveIndex               uint32          `json:"objective_index,omitempty"`
+	ObjectiveCount               uint32          `json:"objective_count,omitempty"`
+	Phase                        string          `json:"phase"`
+	OperationID                  string          `json:"operation_id,omitempty"`
+	Retries                      uint32          `json:"retries,omitempty"`
+	LastProgressUTC              time.Time       `json:"last_progress_utc"`
+	LastScanUTC                  time.Time       `json:"last_scan_utc,omitempty"`
+	LastTargetHealthPct          uint32          `json:"last_target_health_pct,omitempty"`
+	LastTravelPosition           []float64       `json:"last_travel_position,omitempty"`
 }
 
 type persistedAgent struct {
-	Profile                 string               `json:"profile"`
-	Memories                []string             `json:"memories"`
-	Task                    *task                `json:"task,omitempty"`
-	LastEventID             string               `json:"last_event_id,omitempty"`
-	OwnerToken              string               `json:"owner_token,omitempty"`
-	OwnerEpoch              string               `json:"owner_epoch,omitempty"`
-	RecentEvents            []recentEvent        `json:"recent_events,omitempty"`
-	PendingDecisionReason   string               `json:"pending_decision_reason,omitempty"`
-	DecisionPending         bool                 `json:"decision_pending,omitempty"`
-	UnavailableDestinations map[string]time.Time `json:"unavailable_destinations,omitempty"`
-	ClusterGroupInvite      bool                 `json:"cluster_group_invite,omitempty"`
-	ClusterSocialSession    bool                 `json:"cluster_social_session,omitempty"`
+	GatheringSources        map[string]gatheringEvidence   `json:"gathering_sources,omitempty"`
+	AuctionObservation      *auctionObservation            `json:"auction_observation,omitempty"`
+	AuctionCatalog          map[uint32]*auctionObservation `json:"auction_catalog,omitempty"`
+	PendingAuctionBids      map[uint32]*auctionBid         `json:"pending_auction_bids,omitempty"`
+	SocialAffinities        *socialAffinities              `json:"social_affinities,omitempty"`
+	SocialPreferredFriend   uint64                         `json:"social_preferred_friend,omitempty"`
+	SocialOfflineSince      int64                          `json:"social_offline_since,omitempty"`
+	RoadCooldowns           map[string]time.Time           `json:"road_cooldowns,omitempty"`
+	RecipeInspection        *recipeInspection              `json:"recipe_inspection,omitempty"`
+	Profile                 string                         `json:"profile"`
+	Memories                []string                       `json:"memories"`
+	Task                    *task                          `json:"task,omitempty"`
+	LastEventID             string                         `json:"last_event_id,omitempty"`
+	OwnerToken              string                         `json:"owner_token,omitempty"`
+	OwnerEpoch              string                         `json:"owner_epoch,omitempty"`
+	RecentEvents            []recentEvent                  `json:"recent_events,omitempty"`
+	PendingDecisionReason   string                         `json:"pending_decision_reason,omitempty"`
+	DecisionPending         bool                           `json:"decision_pending,omitempty"`
+	UnavailableDestinations map[string]time.Time           `json:"unavailable_destinations,omitempty"`
+	ClusterGroupInvite      bool                           `json:"cluster_group_invite,omitempty"`
+	ClusterSocialSession    bool                           `json:"cluster_social_session,omitempty"`
 }
 
 type recentEvent struct {
-	Type    string          `json:"type"`
-	Payload json.RawMessage `json:"payload"`
-	New     bool            `json:"new"`
+	Timestamp int64           `json:"timestamp_unix_ms,omitempty"`
+	Type      string          `json:"type"`
+	Payload   json.RawMessage `json:"payload"`
+	New       bool            `json:"new"`
 }
 
 type controller struct {
@@ -405,6 +522,10 @@ type actor struct {
 	lastDecisionAt        time.Time
 	nextIdleDecision      time.Time
 	online                bool
+	lastDecisionBlock     string
+	lastDecisionBlockAt   time.Time
+	lastTaskWait          string
+	lastTaskWaitAt        time.Time
 }
 
 func main() {
@@ -482,9 +603,12 @@ func (c *controller) startModelWorkers(count uint32) {
 	for worker := uint32(0); worker < count; worker++ {
 		go func() {
 			for job := range c.modelJobs {
+				started := time.Now()
+				queueWait := started.Sub(job.queuedAt)
 				call, err := c.model.decide(c.modelSlots, job.profile, job.memories,
 					job.state, job.events, job.task, job.trigger)
 				result := event{Type: "internal_decision", decision: &decisionResult{
+					traceID: job.traceID, trigger: job.trigger, queueWait: queueWait, modelElapsed: time.Since(started),
 					revision: job.revision, call: call, err: err,
 				}}
 				select {
@@ -841,7 +965,7 @@ func (a *actor) handleEvent(incoming event) {
 	}
 	// Routine observations must not invalidate an in-flight decision. Active task
 	// monitoring requests snapshots faster than some model responses arrive.
-	if incoming.Type != "snapshot" && incoming.Type != "primitive_progress" && incoming.Type != "bot_heartbeat" && incoming.Type != "social_session_ready" &&
+	if incoming.Type != "snapshot" && incoming.Type != "primitive_progress" && incoming.Type != "bot_heartbeat" && incoming.Type != "social_affinity" && incoming.Type != "social_session_ready" && incoming.Type != "gathering_source_observed" && incoming.Type != "auction_observation" && incoming.Type != "auction_proceeds" &&
 		!(incoming.Type == "operation_result" && a.state.Task != nil && eventOperationID(incoming) == a.state.Task.OperationID) {
 		a.revision++
 	}
@@ -849,9 +973,22 @@ func (a *actor) handleEvent(incoming event) {
 		(incoming.OwnerEpoch != "" && a.state.OwnerEpoch != "" && incoming.OwnerEpoch != a.state.OwnerEpoch) {
 		a.state.ClusterSocialSession = false
 		a.state.ClusterGroupInvite = false
+		a.state.AuctionObservation = nil
+		a.state.AuctionCatalog = nil
 		if a.state.Task != nil {
+			if a.state.Task.Kind == "auction_search" {
+				a.state.Task.Retries++
+			}
+			if a.state.Task.Kind == "auction_proceeds" {
+				a.state.Task.Retries++
+			}
+			if (a.state.Task.Kind == "npc_service" || a.state.Task.Kind == "crafting" || a.state.Task.Kind == "auction_purchase" || a.state.Task.Kind == "auction_bid") && a.state.Task.OperationID != "" {
+				a.state.Task.Retries++ // Economic effects cannot be replayed after owner loss.
+			}
 			a.state.Task.OperationID = ""
-			a.state.Task.Phase = "select"
+			if a.state.Task.Kind != "navigate_destination" || a.state.Task.Phase != "road_segment" {
+				a.state.Task.Phase = "select"
+			}
 			a.state.Task.LastProgressUTC = time.Now().UTC()
 		}
 		a.pendingSnapshotID = ""
@@ -874,9 +1011,26 @@ func (a *actor) handleEvent(incoming event) {
 		var current snapshot
 		if err := json.Unmarshal(snapshotBytes, &current); err == nil {
 			current.Bot.PendingGroupInvite = current.Bot.PendingGroupInvite || a.state.ClusterGroupInvite
+			a.decorateGatheringEvidence(&current, time.Now())
+			current.Auctions = nil
+			current.CachedAuctionItems = a.auctionCatalogSummary(current.Bot.MapID)
+			current.PendingAuctionBids = a.pendingBidSummary()
+			if page := a.state.AuctionObservation; page != nil && page.MapID == current.Bot.MapID && time.Since(time.UnixMilli(page.ObservedAt)) <= auctionObservationAge {
+				copy := *page
+				copy.Offers = append([]auctionOffer(nil), page.Offers...)
+				current.Auctions = &copy
+			}
 			a.latest = current
+			a.latest.SocialProgression = a.socialPolicy(time.Now())
 			a.hasSnapshot = true
 			a.snapshotUpdatedAt = time.Now().UTC()
+			if task := a.state.Task; task != nil && (task.Kind == "crafting" || task.Kind == "auction_purchase" || task.Kind == "auction_proceeds") && task.Phase == "observe" &&
+				incoming.RequestID != "" && incoming.RequestID == task.CraftSnapshotID {
+				task.Phase, task.CraftSnapshotID = "select", ""
+				task.CraftObservationAttempts = 0
+				task.CraftObservedStock = craftingObservedStock(current)
+				a.persist()
+			}
 			if a.state.Profile == "" && current.Bot.Name != "" {
 				a.state.Profile = a.owner.population.BotProfile(a.botGUID)
 				if a.state.Profile == "" {
@@ -888,6 +1042,22 @@ func (a *actor) handleEvent(incoming event) {
 		}
 	}
 	switch incoming.Type {
+	case "social_affinity":
+		a.observeSocialAffinities(incoming)
+		return
+	case "auction_bid_notification":
+		a.observeAuctionBidNotification(incoming)
+		return
+	case "auction_proceeds":
+		a.observeAuctionProceeds(incoming)
+		return
+	case "auction_observation":
+		a.observeAuctions(incoming)
+		return
+	case "gathering_source_observed":
+		a.rememberEvent(incoming)
+		a.observeGatheringSource(incoming, time.Now())
+		return
 	case "social_session_ready":
 		if !a.state.ClusterSocialSession {
 			a.state.ClusterSocialSession = true
@@ -919,6 +1089,9 @@ func (a *actor) handleEvent(incoming event) {
 		a.bridgeActive = false
 		a.pendingSnapshotID = ""
 		if a.state.Task != nil {
+			if (a.state.Task.Kind == "npc_service" || a.state.Task.Kind == "crafting") && a.state.Task.OperationID != "" {
+				a.state.Task.Retries++
+			}
 			a.state.Task.OperationID = ""
 			a.state.Task.Phase = "select"
 			a.state.Task.LastProgressUTC = time.Now().UTC()
@@ -956,6 +1129,10 @@ func (a *actor) handleEvent(incoming event) {
 			}
 		}
 	case "chat_received", "group_invite_received", "trade_updated":
+		if incoming.Type == "chat_received" {
+			log.Printf("agent event_received bot=%s event_id=%q type=chat_received delivery_ms=%d", a.botGUID,
+				incoming.EventID, eventDeliveryDelay(incoming.Timestamp))
+		}
 		if incoming.Type == "group_invite_received" {
 			var invite struct {
 				SocialBridge bool `json:"social_bridge"`
@@ -1032,7 +1209,7 @@ func snapshotFromEvent(incoming event) json.RawMessage {
 }
 
 func (a *actor) rememberEvent(incoming event) {
-	a.recent = append(a.recent, recentEvent{Type: incoming.Type, Payload: append(json.RawMessage(nil), incoming.Payload...), New: true})
+	a.recent = append(a.recent, recentEvent{Type: incoming.Type, Timestamp: incoming.Timestamp, Payload: append(json.RawMessage(nil), incoming.Payload...), New: true})
 	if len(a.recent) > maxEvents {
 		a.recent = a.recent[len(a.recent)-maxEvents:]
 	}
@@ -1040,35 +1217,55 @@ func (a *actor) rememberEvent(incoming event) {
 
 func (a *actor) cancelTaskPrimitive() {
 	if a.state.Task != nil {
+		log.Printf("agent task_cancel_requested bot=%s task_id=%s kind=%s phase=%s operation_id=%q", a.botGUID,
+			a.state.Task.ID, a.state.Task.Kind, a.state.Task.Phase, a.state.Task.OperationID)
 		a.sendPrimitive("cancel", map[string]any{})
 	}
 }
 
 func (a *actor) decide(reason string) {
-	if !a.online || !a.bridgeActive || !a.hasSnapshot || a.owner.cfg.modelEndpoint == "" || a.owner.cfg.modelName == "" {
+	if !a.online {
+		a.logDecisionBlock("offline", reason)
+		return
+	}
+	if !a.bridgeActive {
+		a.logDecisionBlock("bridge_inactive", reason)
+		return
+	}
+	if !a.hasSnapshot {
+		a.logDecisionBlock("missing_snapshot", reason)
+		return
+	}
+	if a.owner.cfg.modelEndpoint == "" || a.owner.cfg.modelName == "" {
+		a.logDecisionBlock("model_unconfigured", reason)
 		return
 	}
 	if a.decisionPending {
+		a.logDecisionBlock("request_in_flight", reason)
 		a.pendingDecisionReason = reason
 		return
 	}
 	if !a.lastDecisionAt.IsZero() && time.Since(a.lastDecisionAt) < minDecisionGap {
+		a.logDecisionBlock("minimum_gap", reason)
 		a.pendingDecisionReason = reason
 		return
 	}
 	job := decisionJob{
+		traceID: newID(), queuedAt: time.Now(),
 		actor: a, revision: a.revision, profile: a.state.Profile,
 		memories: append([]string(nil), a.state.Memories...), state: a.latest,
 		events: append([]recentEvent(nil), a.recent...), task: cloneTask(a.state.Task), trigger: reason,
 	}
 	select {
 	case a.owner.modelJobs <- job:
+		a.lastDecisionBlock = ""
+		a.logDecisionState("queued", reason, job.traceID)
 		a.decisionPending = true
 		a.lastDecisionAt = time.Now().UTC()
 		a.consumeRecentEvents()
 	default:
+		a.logDecisionBlock("model_queue_full", reason)
 		a.pendingDecisionReason = reason
-		log.Printf("agent decision queue full; defer bot %s", a.botGUID)
 	}
 }
 
@@ -1077,13 +1274,39 @@ func cloneTask(value *task) *task {
 		return nil
 	}
 	copy := *value
+	copy.RoadPoints = make([][]float64, len(value.RoadPoints))
+	for index, point := range value.RoadPoints {
+		copy.RoadPoints[index] = append([]float64(nil), point...)
+	}
 	copy.AreaCenter = append([]float64(nil), value.AreaCenter...)
 	copy.LastTravelPosition = append([]float64(nil), value.LastTravelPosition...)
+	copy.LootTargets = append([]string(nil), value.LootTargets...)
+	copy.ServiceArguments = append(json.RawMessage(nil), value.ServiceArguments...)
+	copy.CraftSteps = append([]craftingStep(nil), value.CraftSteps...)
+	copy.CraftSupplies = append([]craftSupply(nil), value.CraftSupplies...)
+	for index := range copy.CraftSupplies {
+		copy.CraftSupplies[index].TradeMaterials = append([]craftReagent(nil), value.CraftSupplies[index].TradeMaterials...)
+		copy.CraftSupplies[index].RequiredMaterials = append([]craftReagent(nil), value.CraftSupplies[index].RequiredMaterials...)
+	}
+	copy.CraftGatherTried = append([]string(nil), value.CraftGatherTried...)
+	copy.CraftGatherSitesTried = append([]string(nil), value.CraftGatherSitesTried...)
+	copy.AuctionSearchItems = append([]uint32(nil), value.AuctionSearchItems...)
+	copy.CraftMaterialGoals = append([]craftReagent(nil), value.CraftMaterialGoals...)
+	if value.CraftObservedStock != nil {
+		copy.CraftObservedStock = append(make([]craftReagent, 0, len(value.CraftObservedStock)), value.CraftObservedStock...)
+	}
 	return &copy
 }
 
 func (a *actor) handleDecisionResult(result decisionResult) {
 	a.decisionPending = false
+	tool := "none"
+	if result.call != nil {
+		tool = result.call.Name
+	}
+	log.Printf("agent decision_result bot=%s trace_id=%q trigger=%q revision=%d current_revision=%d queue_ms=%d model_ms=%d tool=%q error=%t stale=%t",
+		a.botGUID, result.traceID, result.trigger, result.revision, a.revision, result.queueWait.Milliseconds(),
+		result.modelElapsed.Milliseconds(), tool, result.err != nil, result.revision != a.revision)
 	if result.revision != a.revision {
 		if a.hasNewEvents() {
 			a.decide("newer_event")
@@ -1125,6 +1348,14 @@ type toolCall struct {
 }
 
 func (a *actor) applyTool(call toolCall) {
+	previous := a.state.Task
+	a.logDecisionState("tool_selected", call.Name, "")
+	defer func() {
+		if previous != nil && a.state.Task != nil && previous != a.state.Task {
+			log.Printf("agent task_replaced bot=%s tool=%q previous_id=%s previous_kind=%s next_id=%s next_kind=%s",
+				a.botGUID, call.Name, previous.ID, previous.Kind, a.state.Task.ID, a.state.Task.Kind)
+		}
+	}()
 	var args map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
 		return
@@ -1133,6 +1364,10 @@ func (a *actor) applyTool(call toolCall) {
 	case "send_chat":
 		a.sendPrimitive("send_chat", rawMapToAny(args))
 	case "begin_trade", "accept_trade", "cancel_trade", "offer_trade_money", "offer_trade_item":
+		if current := a.state.Task; current != nil && current.CraftTradeStage != "" {
+			a.rejectTool(call.Name, "a negotiated acquisition owns the trade; stop_task before manual trade controls")
+			return
+		}
 		a.sendPrimitive(call.Name, rawMapToAny(args))
 	case "invite_to_group", "accept_group_invite", "decline_group_invite":
 		a.sendPrimitive(call.Name, rawMapToAny(args))
@@ -1145,11 +1380,42 @@ func (a *actor) applyTool(call toolCall) {
 	case "navigate_to_destination":
 		a.startDestinationTask(args)
 	case "work_on_quest":
+		if !a.socialToolAllowed(call.Name) {
+			return
+		}
 		a.startQuestTask(args)
 	case "accept_quest":
+		if !a.socialToolAllowed(call.Name) {
+			return
+		}
 		a.startAcceptQuestTask(args)
 	case "kill_count":
+		if !a.socialToolAllowed(call.Name) {
+			return
+		}
 		a.startKillTask(args)
+	case "loot_nearby":
+		a.startLootBatchTask(args)
+	case "visit_vendor", "train_class_spells", "collect_mail", "send_mail", "discover_flight_path", "take_flight":
+		a.startNPCServiceTask(call.Name, args)
+	case "fish_count":
+		a.startFishingTask(args)
+	case "craft_item":
+		a.startCraftingTask(args)
+	case "negotiate_crafting_trade":
+		a.negotiateCraftingTrade(args)
+	case "inspect_crafting_recipes":
+		a.inspectCraftingRecipes(args)
+	case "inspect_auctions":
+		a.inspectAuctions(args)
+	case "search_auctions":
+		a.searchAuctions(args)
+	case "buy_auction":
+		a.buyAuction(args)
+	case "bid_auction":
+		a.bidAuction(args)
+	case "collect_auction_proceeds":
+		a.collectAuctionProceeds(args)
 	case "gather_resources":
 		a.startGatherTask(args)
 	case "stop_task":
@@ -1351,6 +1617,7 @@ func (a *actor) advanceAcceptQuestTask(current *task) {
 }
 
 func (a *actor) rejectTool(name, reason string) {
+	log.Printf("agent tool_rejected bot=%s tool=%q reason=%q", a.botGUID, name, reason)
 	payload := mustJSON(map[string]string{"tool": name, "reason": reason})
 	a.recent = append(a.recent, recentEvent{Type: "tool_rejected", Payload: payload, New: true})
 	if len(a.recent) > maxEvents {
@@ -1363,26 +1630,52 @@ func (a *actor) advanceTask() {
 	var trade struct {
 		Active bool `json:"active"`
 	}
-	if json.Unmarshal(a.latest.Trade, &trade) == nil && trade.Active {
+	if json.Unmarshal(a.latest.Trade, &trade) == nil && trade.Active && !materialTradeTask(a.state.Task) {
 		if a.state.Task != nil {
+			a.logTaskWait("trade")
 			a.state.Task.LastProgressUTC = time.Now().UTC()
 		}
 		return
 	}
 	current := a.state.Task
-	if current == nil || !a.online || !a.bridgeActive || !a.hasSnapshot {
+	if current == nil {
+		if a.online && a.bridgeActive && a.hasSnapshot && a.startPassiveAuctionProceeds() {
+			return
+		}
+		a.clearTaskWait()
+		return
+	}
+	if !a.online {
+		a.logTaskWait("offline")
+		return
+	}
+	if !a.bridgeActive {
+		a.logTaskWait("bridge_inactive")
+		return
+	}
+	if !a.hasSnapshot {
+		a.logTaskWait("missing_snapshot")
 		return
 	}
 	if current.OperationID != "" {
+		a.logTaskWait("native_owned")
 		timeout := 2 * time.Minute
 		if current.Phase == "combat" {
 			timeout = combatOperationTimeout
-		} else if current.Phase == "travel" || current.Phase == "turnin_travel" {
+		} else if current.Phase == "travel" || current.Phase == "turnin_travel" || current.Phase == "road_segment" {
+			timeout = travelOperationTimeout
+		} else if current.Kind == "npc_service" && current.ServiceOperation == "take_flight" {
 			timeout = travelOperationTimeout
 		}
 		if !current.LastProgressUTC.IsZero() && time.Since(current.LastProgressUTC) > timeout {
+			log.Printf("agent task_watchdog bot=%s task_id=%s kind=%s phase=%s operation_id=%q retries=%d timeout_ms=%d",
+				a.botGUID, current.ID, current.Kind, current.Phase, current.OperationID, current.Retries, timeout.Milliseconds())
 			a.sendPrimitive("cancel", map[string]any{})
 			current.OperationID = ""
+			if current.Kind == "navigate_destination" && current.Phase == "road_segment" {
+				a.fallbackRoadCorridor(current)
+				return
+			}
 			current.Retries++
 			if current.Retries >= 3 {
 				a.finishTask("blocked", "core primitive timed out repeatedly")
@@ -1395,6 +1688,7 @@ func (a *actor) advanceTask() {
 		}
 		return
 	}
+	a.clearTaskWait()
 	if current.Phase == "approaching" {
 		a.advanceCombatApproach(current)
 		return
@@ -1402,6 +1696,20 @@ func (a *actor) advanceTask() {
 	switch current.Kind {
 	case "kill_count":
 		a.advanceKillTask(current)
+	case "loot_batch":
+		a.advanceLootBatchTask(current)
+	case "npc_service":
+		a.advanceNPCServiceTask(current)
+	case "fishing":
+		a.advanceFishingTask(current)
+	case "crafting", "auction_purchase":
+		a.advanceCraftingTask(current)
+	case "auction_search":
+		a.advanceAuctionSearch(current)
+	case "auction_bid":
+		a.advanceAuctionBid(current)
+	case "auction_proceeds":
+		a.advanceAuctionProceeds(current)
 	case "gather_resources":
 		a.advanceGatherTask(current)
 	case "quest":
@@ -1411,6 +1719,10 @@ func (a *actor) advanceTask() {
 	case "navigate_player", "navigate_to_player", "follow_player":
 		a.advancePlayerNavigationTask(current)
 	case "navigate_destination":
+		if current.Phase == "road_segment" {
+			a.advanceRoadCorridor(current)
+			return
+		}
 		a.advanceDestinationTask(current)
 	case "assist_leader":
 		// The core loop self-drives on live group state; progress events keep
@@ -1485,6 +1797,12 @@ func (a *actor) startDestinationTask(args map[string]json.RawMessage) {
 	current := &task{ID: newID(), Kind: "navigate_destination", DestinationName: destination,
 		Phase: "travel", MapID: a.latest.Bot.MapID, LastProgressUTC: time.Now().UTC()}
 	a.state.Task = current
+	if corridor := a.preferredRoadCorridor(destination); corridor != nil {
+		current.RoadCorridorID = corridor.ID
+		current.RoadPoints = cloneTask(&task{RoadPoints: corridor.Points}).RoadPoints
+		a.advanceRoadCorridor(current)
+		return
+	}
 	current.OperationID = a.sendPrimitive("navigate_to_destination", map[string]any{"destination": destination})
 	a.persist()
 }
@@ -2103,6 +2421,38 @@ func (a *actor) handleTaskOperation(incoming event) {
 		result.OperationID != current.OperationID {
 		return
 	}
+	if current.Kind == "loot_batch" {
+		a.handleLootBatchOperation(result.OperationID, result.Status, result.Reason, result.Persistent)
+		return
+	}
+	if current.Kind == "npc_service" {
+		a.handleNPCServiceOperation(result.Status, result.Reason, result.Persistent)
+		return
+	}
+	if current.Kind == "fishing" {
+		a.handleFishingOperation(result.Status, result.Reason, result.Persistent)
+		return
+	}
+	if current.Kind == "auction_bid" {
+		a.handleAuctionBid(result.Status, result.Reason, result.Persistent)
+		return
+	}
+	if current.Kind == "auction_proceeds" {
+		a.handleAuctionProceeds(result.Status, result.Reason, result.Persistent)
+		return
+	}
+	if current.Kind == "auction_search" || (current.Kind == "crafting" && current.Phase == "auction_search") {
+		a.handleAuctionSearch(result.Status, result.Reason, result.Persistent)
+		return
+	}
+	if current.Kind == "crafting" || current.Kind == "auction_purchase" {
+		a.handleCraftingOperation(result.Status, result.Reason, result.Persistent)
+		return
+	}
+	if current.Kind == "navigate_destination" && current.Phase == "road_segment" {
+		a.handleRoadCorridor(result.Status, result.Reason, result.Persistent)
+		return
+	}
 	if result.Status == "accepted" {
 		if !result.Persistent {
 			// Compatibility with older cores during a rolling deployment.
@@ -2239,7 +2589,11 @@ func (a *actor) requestSnapshot() {
 	}
 	a.pendingSnapshotID = newID()
 	a.pendingSnapshotAt = time.Now().UTC()
-	a.sendCommand(a.pendingSnapshotID, "snapshot", map[string]any{})
+	arguments := map[string]any{}
+	if query := a.state.RecipeInspection; query != nil {
+		arguments["recipe_offset"], arguments["recipe_item_id"] = query.Offset, query.ItemID
+	}
+	a.sendCommand(a.pendingSnapshotID, "snapshot", arguments)
 }
 
 func (a *actor) sendPrimitive(operation string, arguments any) string {
@@ -2270,7 +2624,17 @@ func (a *actor) sendCommandWithID(requestID, operationID, operation string, argu
 	}
 	subject := commandSubject(a.owner.cfg.subjectPrefix, a.ownerToken, operation, a.state.ClusterGroupInvite, a.state.ClusterSocialSession)
 	if err := a.owner.nats.Publish(subject, body); err != nil {
-		log.Printf("publish command for bot %s: %v", a.botGUID, err)
+		log.Printf("agent command_publish_failed bot=%s request_id=%s operation_id=%q operation=%s error=%v",
+			a.botGUID, requestID, operationID, operation, err)
+		return
+	}
+	if operationID != "" {
+		taskID := ""
+		if a.state.Task != nil {
+			taskID = a.state.Task.ID
+		}
+		log.Printf("agent primitive_dispatched bot=%s task_id=%q request_id=%s operation_id=%s operation=%s",
+			a.botGUID, taskID, requestID, operationID, operation)
 	}
 }
 
@@ -2300,8 +2664,8 @@ func (a *actor) finishTask(status, reason string) {
 	}
 	a.pendingDecisionReason = "task_" + status
 	a.persist()
-	log.Printf("agent task ended bot=%s kind=%s status=%s reason=%q destination=%q player=%q progress=%d/%d",
-		a.botGUID, finished.Kind, status, reason, finished.DestinationName, finished.TargetName, finished.Completed, finished.GoalCount)
+	log.Printf("agent task ended bot=%s task_id=%s kind=%s status=%s reason=%q destination=%q player=%q progress=%d/%d",
+		a.botGUID, finished.ID, finished.Kind, status, reason, finished.DestinationName, finished.TargetName, finished.Completed, finished.GoalCount)
 	a.requestSnapshot()
 }
 

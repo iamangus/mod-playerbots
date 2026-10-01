@@ -7,8 +7,9 @@
 #ifndef PLAYERBOTS_AGENTPOPULATION_H
 #define PLAYERBOTS_AGENTPOPULATION_H
 
-#include "Common.h"
 #include <cstdint>
+
+#include "Common.h"
 
 class Player;
 
@@ -28,6 +29,8 @@ public:
     bool IsEnabled() const;
     void Update(uint32 diff);
     void OnPlayerLogin(Player* player);
+    bool PrefersOnline(uint32 botGuid) const;
+    bool PrefersOnlineAccount(uint32 accountId) const;
 
 private:
     AgentPopulation() = default;

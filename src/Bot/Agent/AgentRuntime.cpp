@@ -11,18 +11,25 @@ namespace boost::property_tree::json_parser::detail
 using boost::placeholders::_1;
 }
 
+#include "AgentAuctionOperation.h"
 #include "AgentBridgeShared.h"
+#include "AgentMailboxOperation.h"
+#include "AgentMaterialTradeOperation.h"
 #include "AgentRuntime.h"
 #include "AgentTradeOperation.h"
 #include "AiObjectContext.h"
 #include "ChooseTravelTargetAction.h"
 #include "Creature.h"
+#include "DBCStores.h"
 #include "Duration.h"
 #include "Event.h"
 #include "EventMap.h"
+#include "FishingAction.h"
 #include "GameObject.h"
 #include "Group.h"
 #include "Item.h"
+#include "ItemPackets.h"
+#include "LootMgr.h"
 #include "LootObjectStack.h"
 #include "MotionMaster.h"
 #include "MovementActions.h"
@@ -35,8 +42,12 @@ using boost::placeholders::_1;
 #include "Playerbots.h"
 #include "QuestDef.h"
 #include "SharedDefines.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "Timer.h"
+#include "Trainer.h"
 #include "TravelMgr.h"
+#include "World.h"
 #include "WorldPacket.h"
 #if defined(PLAYERBOTS_WITH_TOCLOUD9_SIDECAR)
 #include "libsidecar.h"
@@ -52,6 +63,7 @@ using boost::placeholders::_1;
 #include <limits>
 #include <map>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -68,11 +80,20 @@ constexpr size_t AGENT_MAX_PENDING_EVENTS = 64;
 constexpr uint32 AGENT_HEARTBEAT_MS = 60000;
 constexpr uint32 AGENT_CONTROLLER_TIMEOUT_MS = 90000;
 constexpr uint32 AGENT_MAX_SNAPSHOT_CREATURES = 12;
+constexpr uint32 AGENT_MAX_SNAPSHOT_CORPSES = 12;
 constexpr uint32 AGENT_MAX_SNAPSHOT_GAMEOBJECTS = 12;
 constexpr uint32 AGENT_MAX_SNAPSHOT_PLAYERS = 12;
 constexpr uint32 AGENT_MAX_SNAPSHOT_ITEMS = 40;
 constexpr uint32 AGENT_MAX_SNAPSHOT_AVAILABLE_QUESTS = 12;
 constexpr uint32 AGENT_MAX_AVAILABLE_QUESTS_PER_GIVER = 3;
+constexpr uint32 AGENT_MAX_VENDOR_OFFERS_PER_NPC = 12;
+constexpr uint32 AGENT_MAX_CRAFTING_RECIPES = 40;
+constexpr uint32 AGENT_MAX_OBSERVED_DROP_ITEMS = 12;
+constexpr uint32 AGENT_MAX_CRAFTING_QUERY_DEPTH = 8;
+constexpr uint32 AGENT_MAX_CRAFTING_RECIPE_OFFSET = 4096;
+constexpr uint32 AGENT_CRAFTING_CAST_TIMEOUT_MS = 90000;
+constexpr uint32 AGENT_FISHING_CAST_TIMEOUT_MS = 45000;
+constexpr uint32 AGENT_FISHING_BOBBER_SPAWN_MS = 3000;
 constexpr uint32 AGENT_EVENT_SHARD_COUNT = 256;
 constexpr uint32 AGENT_OPERATION_TICK_MS = 250;
 constexpr uint32 AGENT_OPERATION_EVENT = 1;
@@ -465,8 +486,36 @@ struct AgentRuntime::Impl
         ObjectGuid target;
         uint32 mapId = 0;
         uint32 questId = 0;
+        uint32 serviceId = 0;
+        uint32 serviceLimit = 0;
+        uint32 serviceCompleted = 0;
+        uint32 serviceBudget = 0;
+        uint32 serviceSpent = 0;
+        std::map<uint32, uint32> fishingItemsBefore;
+        std::vector<uint32> fishingLootItems;
+        uint32 fishingStartedMs = 0;
+        bool fishingReeled = false;
+        std::string diagnosticBlock;
+        std::shared_ptr<AgentMailboxWork> mailboxWork;
+        std::shared_ptr<AgentAuctionWork> auctionWork;
+        std::shared_ptr<AgentMaterialTradeWork> materialTradeWork;
+        uint64 materialTradeRevision = 0;
+        std::vector<AgentTradeMaterial> tradeMaterials;
+        uint32 auctionId = 0;
+        uint32 auctionCursor = 0;
+        uint32 auctionBuyout = 0;
+        ObjectGuid auctionItemGuid;
+        std::string mailRecipient;
+        std::string mailSubject;
+        std::string mailBody;
+        ObjectGuid mailItemGuid;
+        uint32 mailMoney = 0;
+        AgentAuctionMailFilter auctionMailFilter;
+        uint32 craftItemId = 0;
+        uint32 craftItemsBefore = 0;
         float distance = 2.0f;
         bool attempted = false;
+        bool corpseOnly = false;
         bool movementStarted = false;
         bool paused = false;
         uint32 lastProgressMs = 0;
@@ -475,6 +524,7 @@ struct AgentRuntime::Impl
         uint32 lastMoveAttemptMs = 0;
         uint32 health = 0;
         Position position;
+        Position navigationPosition;
     };
 
     std::unique_ptr<LocalOperation> localOperation;
@@ -495,6 +545,10 @@ struct AgentRuntime::Impl
     std::mutex inviteMutex;
     bool initialized = false;
     std::atomic<bool> remoteControlActive{false};
+    std::atomic<uint64> gatheringObservationTarget{0};
+    std::mutex gatheringLocationMutex;
+    ObjectGuid gatheringLocationGuid;
+    std::string gatheringLocationJson;
     std::vector<std::string> suppressedLegacyStrategies;
     bool groupInitialized = false;
     bool sendingAgentChat = false;
@@ -571,6 +625,13 @@ struct AgentRuntime::Impl
                        std::string const& status, std::string const& reason,
                        ObjectGuid resultTarget = ObjectGuid::Empty, bool persistent = false)
     {
+        if (status == "rejected")
+            LOG_WARN("playerbots.agent", "Operation rejected bot={} request={} operation_id={} operation={} reason={}",
+                     botGuid.ToString(), requestId, operationId, operation, reason);
+        else
+            LOG_DEBUG("playerbots.agent",
+                      "Operation result bot={} request={} operation_id={} operation={} status={} reason={}",
+                      botGuid.ToString(), requestId, operationId, operation, status, reason);
         std::ostringstream payload;
         payload << "{\"operation_id\":\"" << EscapeJson(operationId) << "\",\"operation\":\"" << EscapeJson(operation)
                 << "\",\"status\":\"" << EscapeJson(status) << "\",\"reason\":\"" << EscapeJson(reason)
@@ -658,7 +719,8 @@ struct AgentRuntime::Impl
         addedTravelStrategy = false;
     }
 
-    std::string BuildSnapshot(PlayerbotAI* botAI)
+    std::string BuildSnapshot(PlayerbotAI* botAI, uint32 craftingFocus = 0, uint32 recipeOffset = 0,
+                              uint32 recipeItemId = 0)
     {
         Player* bot = botAI->GetBot();
         std::ostringstream result;
@@ -673,6 +735,7 @@ struct AgentRuntime::Impl
                << ",\"moving\":" << (bot->isMoving() ? "true" : "false")
                << ",\"can_move\":" << (botAI->CanMove() ? "true" : "false")
                << ",\"experience\":" << bot->GetUInt32Value(PLAYER_XP)
+               << ",\"in_flight\":" << (bot->IsInFlight() ? "true" : "false")
                << ",\"in_combat\":" << (bot->IsInCombat() ? "true" : "false") << ",\"map_id\":" << bot->GetMapId()
                << ",\"zone_id\":" << bot->GetZoneId() << ",\"position\":[" << bot->GetPositionX() << ","
                << bot->GetPositionY() << "," << bot->GetPositionZ() << "]";
@@ -738,8 +801,110 @@ struct AgentRuntime::Impl
 
         result << ",\"professions\":{\"herbalism\":" << bot->GetSkillValue(SKILL_HERBALISM)
                << ",\"mining\":" << bot->GetSkillValue(SKILL_MINING)
-               << ",\"fishing\":" << bot->GetSkillValue(SKILL_FISHING)
-               << "},\"inventory\":{\"money_copper\":" << bot->GetMoney() << ",\"items\":[";
+               << ",\"fishing\":" << bot->GetSkillValue(SKILL_FISHING) << "},\"crafting_recipes\":[";
+        std::vector<uint32> recipeSpells;
+        std::set<uint32> craftingItems;
+        if (craftingFocus)
+            craftingItems.insert(craftingFocus);
+        for (auto const& [spellId, learned] : bot->GetSpellMap())
+        {
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            if (!learned || learned->State == PLAYERSPELL_REMOVED || !learned->Active || !info ||
+                !info->HasAttribute(SPELL_ATTR0_IS_TRADESKILL))
+                continue;
+            uint32 outputId = 0;
+            if (CraftOutput(bot, spellId, outputId))
+                recipeSpells.push_back(spellId);
+        }
+        std::sort(recipeSpells.begin(), recipeSpells.end());
+        uint32 const totalRecipes = uint32(recipeSpells.size());
+        uint32 const pageOffset = std::min(recipeOffset, totalRecipes);
+        bool dependenciesTruncated = false;
+        if (recipeItemId)
+        {
+            std::map<uint32, uint32> recipeByOutput;
+            for (uint32 const spellId : recipeSpells)
+            {
+                uint32 outputId = 0;
+                if (CraftOutput(bot, spellId, outputId))
+                    recipeByOutput.try_emplace(outputId, spellId);  // Lowest spell ID wins, as in the planner.
+            }
+            std::vector<uint32> selected;
+            std::deque<std::pair<uint32, uint32>> pending{{recipeItemId, 0}};
+            std::set<uint32> visited;
+            while (!pending.empty())
+            {
+                auto const [itemId, depth] = pending.front();
+                pending.pop_front();
+                if (!visited.insert(itemId).second)
+                    continue;
+                auto const known = recipeByOutput.find(itemId);
+                if (known == recipeByOutput.end())
+                    continue;  // External materials are not invented as recipes.
+                if (selected.size() >= AGENT_MAX_CRAFTING_RECIPES || depth >= AGENT_MAX_CRAFTING_QUERY_DEPTH)
+                {
+                    dependenciesTruncated = true;
+                    continue;
+                }
+                selected.push_back(known->second);
+                SpellInfo const* info = sSpellMgr->GetSpellInfo(known->second);
+                for (uint32 index = 0; index < MAX_SPELL_REAGENTS; ++index)
+                    if (info->Reagent[index] > 0 && info->ReagentCount[index])
+                        pending.emplace_back(uint32(info->Reagent[index]), depth + 1);
+            }
+            recipeSpells = std::move(selected);
+            craftingItems.insert(recipeItemId);
+        }
+        else
+        {
+            uint32 const end = std::min(totalRecipes, pageOffset + AGENT_MAX_CRAFTING_RECIPES);
+            recipeSpells = std::vector<uint32>(recipeSpells.begin() + pageOffset, recipeSpells.begin() + end);
+        }
+        uint32 recipeCount = 0;
+        for (uint32 const spellId : recipeSpells)
+        {
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            for (SpellEffectInfo const& effect : info->GetEffects())
+            {
+                if (!effect.IsEffect(SPELL_EFFECT_CREATE_ITEM) || !effect.ItemType ||
+                    (effect.DieSides != 0 && effect.DieSides != 1) || effect.RealPointsPerLevel != 0.0f)
+                    continue;  // Random/level-scaled outputs need a separate planning policy.
+                ItemTemplate const* output = sObjectMgr->GetItemTemplate(effect.ItemType);
+                if (!output)
+                    continue;
+                uint32 const yield =
+                    std::min(output->GetMaxStackSize(), uint32(std::max(1, effect.BasePoints + effect.DieSides)));
+                craftingItems.insert(effect.ItemType);
+                if (recipeCount)
+                    result << ",";
+                result << "{\"spell_id\":" << spellId << ",\"item_id\":" << effect.ItemType << ",\"name\":\""
+                       << EscapeJson(output->Name1) << "\",\"yield\":" << yield << ",\"reagents\":[";
+                bool firstReagent = true;
+                for (uint32 index = 0; index < MAX_SPELL_REAGENTS; ++index)
+                {
+                    if (info->Reagent[index] <= 0 || !info->ReagentCount[index])
+                        continue;
+                    craftingItems.insert(uint32(info->Reagent[index]));
+                    if (!firstReagent)
+                        result << ",";
+                    firstReagent = false;
+                    result << "{\"item_id\":" << info->Reagent[index] << ",\"count\":" << info->ReagentCount[index]
+                           << "}";
+                }
+                result << "]}";
+                ++recipeCount;
+            }
+            if (recipeCount >= AGENT_MAX_CRAFTING_RECIPES)
+                break;
+        }
+        result << "],\"crafting_recipe_page\":{\"offset\":" << (recipeItemId ? 0 : pageOffset)
+               << ",\"total\":" << totalRecipes << ",\"item_id\":" << recipeItemId
+               << ",\"dependencies_truncated\":" << (dependenciesTruncated ? "true" : "false") << ",\"next_offset\":";
+        if (!recipeItemId && pageOffset + recipeCount < totalRecipes)
+            result << pageOffset + recipeCount;
+        else
+            result << "null";
+        result << "},\"inventory\":{\"money_copper\":" << bot->GetMoney() << ",\"items\":[";
         std::map<uint32, uint32> itemCounts;
         for (Item* item : botAI->GetInventoryItems())
             if (item)
@@ -774,6 +939,17 @@ struct AgentRuntime::Impl
             }
         result << "]}";
 
+        result << ",\"crafting_inventory\":[";
+        bool firstCraftingItem = true;
+        for (uint32 const itemId : craftingItems)
+        {
+            if (!firstCraftingItem)
+                result << ",";
+            firstCraftingItem = false;
+            result << "{\"item_id\":" << itemId << ",\"count\":" << itemCounts[itemId] << "}";
+        }
+        result << "]";
+
         result << ",\"trade\":{\"revision\":" << tradeRevision.load()
                << ",\"window_open\":" << (bot->GetTradeData() && tradeWindowOpen.load() ? "true" : "false");
         if (TradeData* trade = bot->GetTradeData())
@@ -785,10 +961,11 @@ struct AgentRuntime::Impl
             auto writeOffer = [&](char const* name, TradeData* offer)
             {
                 result << ",\"" << name << "\":{\"money_copper\":" << (offer ? offer->GetMoney() : 0)
+                       << ",\"spell_id\":" << (offer ? offer->GetSpell() : 0)
                        << ",\"accepted\":" << (offer && offer->IsAccepted() ? "true" : "false") << ",\"items\":[";
                 bool first = true;
                 if (offer)
-                    for (uint8 slot = 0; slot < TRADE_SLOT_TRADED_COUNT; ++slot)
+                    for (uint8 slot = 0; slot < TRADE_SLOT_COUNT; ++slot)
                         if (Item* item = offer->GetItem(TradeSlots(slot)))
                         {
                             if (!first)
@@ -869,6 +1046,29 @@ struct AgentRuntime::Impl
             if (++creatureCount >= AGENT_MAX_SNAPSHOT_CREATURES)
                 break;
         }
+        result << "],\"nearby_corpses\":[";
+        GuidVector corpses = botAI->GetAiObjectContext()->GetValue<GuidVector>("nearest corpses")->Get();
+        bool firstCorpse = true;
+        uint32 corpseCount = 0;
+        for (ObjectGuid const guid : corpses)
+        {
+            Creature* corpse = botAI->GetCreature(guid);
+            if (!corpse || !corpse->IsInWorld() || corpse->IsAlive() || corpse->GetMap() != bot->GetMap() ||
+                !corpse->HasFlag(UNIT_DYNAMIC_FLAGS, UNIT_DYNFLAG_LOOTABLE) || !bot->isAllowedToLoot(corpse))
+                continue;
+            LootObject loot(bot, guid);
+            if (!loot.IsLootPossible(bot))
+                continue;
+            if (!firstCorpse)
+                result << ",";
+            firstCorpse = false;
+            result << "{\"guid\":\"" << EscapeJson(std::to_string(guid.GetRawValue())) << "\",\"name\":\""
+                   << EscapeJson(corpse->GetName()) << "\",\"distance\":" << bot->GetDistance(corpse)
+                   << ",\"position\":[" << corpse->GetPositionX() << "," << corpse->GetPositionY() << ","
+                   << corpse->GetPositionZ() << "]}";
+            if (++corpseCount >= AGENT_MAX_SNAPSHOT_CORPSES)
+                break;
+        }
         result << "],\"nearby_game_objects\":[";
         GuidVector gameObjects = botAI->GetAiObjectContext()->GetValue<GuidVector>("nearest game objects")->Get();
         bool firstObject = true;
@@ -889,6 +1089,20 @@ struct AgentRuntime::Impl
                    << ",\"distance\":" << bot->GetDistance(object) << ",\"position\":[" << object->GetPositionX() << ","
                    << object->GetPositionY() << "," << object->GetPositionZ() << "]}";
             if (++objectCount >= AGENT_MAX_SNAPSHOT_GAMEOBJECTS)
+                break;
+        }
+        result << "],\"nearby_mailboxes\":[";
+        uint32 mailboxCount = 0;
+        for (ObjectGuid const guid : gameObjects)
+        {
+            GameObject* mailbox = botAI->GetGameObject(guid);
+            if (!mailbox || !mailbox->isSpawned() || mailbox->GetGoType() != GAMEOBJECT_TYPE_MAILBOX)
+                continue;
+            if (mailboxCount)
+                result << ",";
+            result << "{\"guid\":\"" << EscapeJson(std::to_string(guid.GetRawValue())) << "\",\"name\":\""
+                   << EscapeJson(mailbox->GetName()) << "\",\"distance\":" << bot->GetDistance(mailbox) << "}";
+            if (++mailboxCount >= AGENT_MAX_SNAPSHOT_GAMEOBJECTS)
                 break;
         }
         result << "],\"nearby_players\":[";
@@ -929,7 +1143,56 @@ struct AgentRuntime::Impl
                    << "\",\"entry\":" << creature->GetEntry() << ",\"name\":\"" << EscapeJson(creature->GetName())
                    << "\",\"npc_flags\":" << creature->GetNpcFlags()
                    << ",\"quest_giver\":" << (creature->HasNpcFlag(UNIT_NPC_FLAG_QUESTGIVER) ? "true" : "false")
-                   << ",\"distance\":" << bot->GetDistance(creature) << "}";
+                   << ",\"distance\":" << bot->GetDistance(creature);
+            Trainer::Trainer* trainer =
+                creature->HasNpcFlag(UNIT_NPC_FLAG_TRAINER) ? sObjectMgr->GetTrainer(creature->GetEntry()) : nullptr;
+            bool const classTrainer =
+                trainer && trainer->GetTrainerType() == Trainer::Type::Class && trainer->IsTrainerValidForPlayer(bot);
+            result << ",\"class_trainer\":" << (classTrainer ? "true" : "false") << ",\"vendor_offers\":[";
+            VendorItemData const* offers =
+                creature->HasNpcFlag(UNIT_NPC_FLAG_VENDOR) ? creature->GetVendorItems() : nullptr;
+            uint32 publishedOffers = 0;
+            if (offers)
+                for (uint32 slot = 0; slot < offers->GetItemCount(); ++slot)
+                {
+                    VendorItem const* offer = offers->GetItem(slot);
+                    if (!offer || offer->ExtendedCost)
+                        continue;
+                    ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(offer->item);
+                    if (!itemTemplate)
+                        continue;
+                    if (publishedOffers)
+                        result << ",";
+                    uint32 const price =
+                        uint32(std::floor(itemTemplate->BuyPrice * bot->GetReputationPriceDiscount(creature)));
+                    result << "{\"item_id\":" << offer->item << ",\"name\":\"" << EscapeJson(itemTemplate->Name1)
+                           << "\",\"bundle_count\":" << itemTemplate->BuyCount << ",\"price_copper\":" << price << "}";
+                    if (++publishedOffers >= AGENT_MAX_VENDOR_OFFERS_PER_NPC)
+                        break;
+                }
+            uint32 const taxiNode =
+                creature->HasNpcFlag(UNIT_NPC_FLAG_FLIGHTMASTER)
+                    ? sObjectMgr->GetNearestTaxiNode(creature->GetPositionX(), creature->GetPositionY(),
+                                                     creature->GetPositionZ(), creature->GetMapId(), bot->GetTeamId())
+                    : 0;
+            result << "],\"taxi_node_id\":" << taxiNode << ",\"taxi_routes\":[";
+            auto const sourceRoutes = sTaxiPathSetBySource.find(taxiNode);
+            uint32 publishedRoutes = 0;
+            if (sourceRoutes != sTaxiPathSetBySource.end())
+                for (auto const& [destinationId, route] : sourceRoutes->second)
+                {
+                    TaxiNodesEntry const* destination = sTaxiNodesStore.LookupEntry(destinationId);
+                    if (!route || !destination || !bot->m_taxi.IsTaximaskNodeKnown(destinationId))
+                        continue;
+                    if (publishedRoutes)
+                        result << ",";
+                    uint32 const fare = uint32(std::ceil(route->price * bot->GetReputationPriceDiscount(creature)));
+                    result << "{\"to_node\":" << destinationId << ",\"name\":\"" << EscapeJson(destination->name[0])
+                           << "\",\"price_copper\":" << fare << "}";
+                    if (++publishedRoutes >= AGENT_MAX_VENDOR_OFFERS_PER_NPC)
+                        break;
+                }
+            result << "]}";
             if (++npcCount >= AGENT_MAX_SNAPSHOT_PLAYERS)
                 break;
         }
@@ -970,17 +1233,29 @@ struct AgentRuntime::Impl
         return result.str();
     }
 
-    void PublishSnapshot(PlayerbotAI* botAI, AgentBridgeCommand const& command)
+    void PublishSnapshot(PlayerbotAI* botAI, AgentBridgeCommand const& command, uint32 craftingFocus = 0,
+                         uint32 recipeOffset = 0, uint32 recipeItemId = 0)
     {
-        Publish("snapshot", command.requestId, BuildSnapshot(botAI));
+        Publish("snapshot", command.requestId, BuildSnapshot(botAI, craftingFocus, recipeOffset, recipeItemId));
     }
 
     void ClearOperation(PlayerbotAI* botAI)
     {
+        gatheringObservationTarget.store(0, std::memory_order_release);
+        if (localOperation && localOperation->mailboxWork)
+            localOperation->mailboxWork->Cancelled.store(true);
+        if (localOperation && localOperation->auctionWork)
+            localOperation->auctionWork->Cancelled.store(true);
+        if (localOperation && localOperation->materialTradeWork)
+            localOperation->materialTradeWork->Cancelled.store(true);
+        if (localOperation && localOperation->command.operation == "fish_once")
+            botAI->GetBot()->InterruptNonMeleeSpells(false, FISHING_SPELL);
+        if (localOperation && localOperation->command.operation == "craft_once" && localOperation->attempted)
+            botAI->GetBot()->InterruptNonMeleeSpells(false, localOperation->serviceId);
         localOperation.reset();
         operationEvents.Reset();
         ClearTravelTarget(botAI);
-        if (!botAI->GetBot()->IsInCombat())
+        if (!botAI->GetBot()->IsInCombat() && !botAI->GetBot()->IsInFlight())
         {
             botAI->GetBot()->GetMotionMaster()->Clear();
             botAI->GetBot()->StopMoving();
@@ -988,16 +1263,38 @@ struct AgentRuntime::Impl
     }
 
     void StartOperation(PlayerbotAI* botAI, AgentBridgeCommand const& command, ObjectGuid target = ObjectGuid::Empty,
-                        float distance = 2.0f, uint32 questId = 0)
+                        float distance = 2.0f, uint32 questId = 0, bool corpseOnly = false)
     {
         // Task replacement sends cancel before start. Clear the old local owner
         // here as well, so redelivery cannot leave competing movement loops.
+        if (localOperation && localOperation->mailboxWork)
+            localOperation->mailboxWork->Cancelled.store(true);
+        if (localOperation && localOperation->auctionWork)
+            localOperation->auctionWork->Cancelled.store(true);
+        if (localOperation && localOperation->materialTradeWork)
+            localOperation->materialTradeWork->Cancelled.store(true);
         localOperation = std::make_unique<LocalOperation>();
         localOperation->command = command;
         localOperation->target = target;
+        gatheringObservationTarget.store(command.operation == "gather_target" ? target.GetRawValue() : 0,
+                                         std::memory_order_release);
+        if (command.operation == "gather_target")
+        {
+            WorldObject* source = target.IsGameObject() ? static_cast<WorldObject*>(botAI->GetGameObject(target))
+                                                        : static_cast<WorldObject*>(botAI->GetUnit(target));
+            std::ostringstream location;
+            if (source)
+                location << ",\"source_guid\":\"" << target.GetRawValue() << "\",\"map_id\":" << source->GetMapId()
+                         << ",\"position\":[" << source->GetPositionX() << "," << source->GetPositionY() << ","
+                         << source->GetPositionZ() << "]";
+            std::lock_guard<std::mutex> guard(gatheringLocationMutex);
+            gatheringLocationGuid = target;
+            gatheringLocationJson = location.str();
+        }
         localOperation->mapId = botAI->GetBot()->GetMapId();
         localOperation->distance = distance;
         localOperation->questId = questId;
+        localOperation->corpseOnly = corpseOnly;
         localOperation->position.Relocate(botAI->GetBot());
         localOperation->lastProgressMs = getMSTime();
         operationEvents.Reset();
@@ -1017,6 +1314,540 @@ struct AgentRuntime::Impl
         Publish("snapshot", "", BuildSnapshot(botAI));
     }
 
+    static bool IsNPCService(std::string const& operation)
+    {
+        return operation == "repair_equipment" || operation == "sell_junk" || operation == "buy_vendor_item" ||
+               operation == "train_class_spells" || operation == "discover_flight_path" || operation == "take_flight" ||
+               operation == "inspect_auctions" || operation == "buy_auction" || operation == "bid_auction";
+    }
+
+    static std::map<uint32, uint32> InventoryCounts(PlayerbotAI* botAI)
+    {
+        std::map<uint32, uint32> counts;
+        for (Item* item : botAI->GetInventoryItems())
+            if (item)
+                counts[item->GetEntry()] += item->GetCount();
+        return counts;
+    }
+
+    static bool CraftOutput(Player* bot, uint32 spellId, uint32& itemId)
+    {
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        auto const learned = bot->GetSpellMap().find(spellId);
+        if (!info || learned == bot->GetSpellMap().end() || !learned->second ||
+            learned->second->State == PLAYERSPELL_REMOVED || !learned->second->Active || !bot->HasSpell(spellId) ||
+            !info->HasAttribute(SPELL_ATTR0_IS_TRADESKILL))
+            return false;
+        uint32 outputs = 0;
+        for (SpellEffectInfo const& effect : info->GetEffects())
+        {
+            if (effect.IsEffect(SPELL_EFFECT_CREATE_RANDOM_ITEM))
+                return false;
+            if (!effect.IsEffect(SPELL_EFFECT_CREATE_ITEM))
+                continue;
+            if (!effect.ItemType || (effect.DieSides != 0 && effect.DieSides != 1) || effect.RealPointsPerLevel != 0.0f)
+                return false;
+            itemId = effect.ItemType;
+            ++outputs;
+        }
+        return outputs == 1 && sObjectMgr->GetItemTemplate(itemId);
+    }
+
+    void UpdateCrafting(PlayerbotAI* botAI, uint32 now)
+    {
+        Player* bot = botAI->GetBot();
+        LocalOperation& loop = *localOperation;
+        if (loop.attempted)
+        {
+            if (bot->IsNonMeleeSpellCast(false))
+            {
+                if (getMSTimeDiff(loop.lastInteractionMs, now) >= AGENT_CRAFTING_CAST_TIMEOUT_MS)
+                    FinishOperation(botAI, false, "crafting cast timed out; inspect inventory");
+                return;
+            }
+            if (bot->GetItemCount(loop.craftItemId, false) > loop.craftItemsBefore)
+                FinishOperation(botAI, true, "crafted output acquired");
+            else
+                FinishOperation(botAI, false, "crafting cast ended without acquired output");
+            return;
+        }
+        if (!botAI->CanMove() || bot->IsNonMeleeSpellCast(false))
+        {
+            if (getMSTimeDiff(loop.lastProgressMs, now) >= AGENT_OPERATION_STALL_MS)
+                FinishOperation(botAI, false, "crafting could not start");
+            return;
+        }
+        if (bot->isMoving())
+        {
+            bot->GetMotionMaster()->Clear();
+            bot->StopMoving();
+            return;
+        }
+        uint32 itemId = 0;
+        if (!CraftOutput(bot, loop.serviceId, itemId) || itemId != loop.craftItemId)
+        {
+            FinishOperation(botAI, false, "crafting recipe changed or unavailable");
+            return;
+        }
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(loop.serviceId);
+        std::map<uint32, uint64> required;
+        for (uint32 index = 0; index < MAX_SPELL_REAGENTS; ++index)
+            if (info->Reagent[index] > 0 && info->ReagentCount[index])
+                required[uint32(info->Reagent[index])] += info->ReagentCount[index];
+        for (auto const& [reagentId, quantity] : required)
+            if (bot->GetItemCount(reagentId, false) < quantity)
+            {
+                FinishOperation(botAI, false, "crafting materials are unavailable");
+                return;
+            }
+        loop.craftItemsBefore = bot->GetItemCount(itemId, false);
+        loop.lastInteractionMs = now;
+        loop.attempted = botAI->CastSpell(loop.serviceId, bot);
+        if (!loop.attempted)
+            FinishOperation(botAI, false, "native crafting cast failed");
+    }
+
+    void UpdateFishing(PlayerbotAI* botAI, uint32 now)
+    {
+        Player* bot = botAI->GetBot();
+        LocalOperation& loop = *localOperation;
+        if (!loop.attempted)
+        {
+            if (bot->isMoving())
+            {
+                bot->GetMotionMaster()->Clear();
+                bot->StopMoving();
+                return;
+            }
+            if (!botAI->CanMove() || bot->IsNonMeleeSpellCast(false))
+                return;
+            WorldPosition water = FindWaterRadial(bot, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                                                  bot->GetMap(), bot->GetPhaseMask(), 10.0f, 20.0f, 2.5f, true, 16);
+            if (!water.IsValid())
+            {
+                FinishOperation(botAI, false, "no fishable water within casting range");
+                return;
+            }
+            bot->SetFacingTo(bot->GetAngle(water.GetPositionX(), water.GetPositionY()));
+            if (!botAI->CastSpell(FISHING_SPELL, bot))
+            {
+                FinishOperation(botAI, false, "fishing cast failed");
+                return;
+            }
+            loop.attempted = true;
+            loop.fishingStartedMs = now;
+            loop.lastProgressMs = now;
+            return;
+        }
+        if (loop.fishingReeled && getMSTimeDiff(loop.lastInteractionMs, now) >= 1000)
+        {
+            loop.lastInteractionMs = now;
+            for (uint32 const itemId : loop.fishingLootItems)
+                if (bot->GetItemCount(itemId, false) > loop.fishingItemsBefore[itemId])
+                {
+                    FinishOperation(botAI, true, "fishing catch acquired");
+                    return;
+                }
+        }
+        if (getMSTimeDiff(loop.fishingStartedMs, now) >= AGENT_FISHING_CAST_TIMEOUT_MS)
+        {
+            FinishOperation(botAI, false, "fishing cast timed out without acquired loot");
+            return;
+        }
+        if (loop.fishingReeled)
+            return;  // Loot response is asynchronous; do not recast or count a click as a catch.
+        GameObject* bobber = bot->GetGameObject(FISHING_SPELL);
+        if (!bobber)
+        {
+            if (getMSTimeDiff(loop.fishingStartedMs, now) >= AGENT_FISHING_BOBBER_SPAWN_MS)
+                FinishOperation(botAI, false, "fishing bobber disappeared or failed to spawn");
+            return;
+        }
+        if (bobber->GetOwnerGUID() != bot->GetGUID() || bobber->GetGoType() != GAMEOBJECT_TYPE_FISHINGNODE)
+        {
+            FinishOperation(botAI, false, "fishing bobber owner or type mismatch");
+            return;
+        }
+        if (bobber->getLootState() == GO_READY)
+        {
+            loop.fishingItemsBefore = InventoryCounts(botAI);
+            loop.fishingReeled = true;
+            loop.lastProgressMs = now;
+            ObjectGuid const bobberGuid = bobber->GetGUID();
+            bobber->Use(bot);
+            // A pool can own the loot instead of the bobber. Capture the actual
+            // native loot source, so an unrelated inventory gain is not a catch.
+            GameObject* source = botAI->GetGameObject(bot->GetLootGUID());
+            if (source && (source->GetGUID() == bobberGuid || source->GetGoType() == GAMEOBJECT_TYPE_FISHINGHOLE))
+            {
+                for (LootItem const& item : source->loot.items)
+                    loop.fishingLootItems.push_back(item.itemid);
+                for (LootItem const& item : source->loot.quest_items)
+                    loop.fishingLootItems.push_back(item.itemid);
+            }
+            if (loop.fishingLootItems.empty())
+                FinishOperation(botAI, false, "fishing produced no collectible loot");
+        }
+    }
+
+    static NPCFlags NPCServiceFlag(std::string const& operation)
+    {
+        if (operation == "inspect_auctions" || operation == "buy_auction" || operation == "bid_auction")
+            return UNIT_NPC_FLAG_AUCTIONEER;
+        if (operation == "discover_flight_path" || operation == "take_flight")
+            return UNIT_NPC_FLAG_FLIGHTMASTER;
+        if (operation == "repair_equipment")
+            return UNIT_NPC_FLAG_REPAIR;
+        if (operation == "train_class_spells")
+            return UNIT_NPC_FLAG_TRAINER;
+        return UNIT_NPC_FLAG_VENDOR;
+    }
+
+    void UpdateMailbox(PlayerbotAI* botAI, uint32 now)
+    {
+        LocalOperation& loop = *localOperation;
+        if (loop.mailboxWork)
+        {
+            bool completed, success, empty;
+            uint32 auctionOutcome;
+            {
+                std::lock_guard<std::mutex> guard(loop.mailboxWork->Mutex);
+                completed = loop.mailboxWork->Completed;
+                success = loop.mailboxWork->Success;
+                empty = loop.mailboxWork->Empty;
+                auctionOutcome = loop.mailboxWork->AuctionOutcome;
+            }
+            if (!completed)
+                return;
+            loop.mailboxWork.reset();
+            if (!success)
+            {
+                FinishOperation(botAI, false,
+                                "mail collection was not verified; mailbox, capacity, or funds unavailable");
+                return;
+            }
+            if (loop.command.operation == "send_mail")
+            {
+                FinishOperation(botAI, true, "native mail submission verified; recipient delivery remains pending");
+                return;
+            }
+            if (empty)
+            {
+                FinishOperation(botAI, true, "no delivered non-COD attachments or money remain");
+                return;
+            }
+            if (loop.auctionMailFilter.AuctionId)
+            {
+                std::ostringstream payload;
+                payload << "{\"operation_id\":\"" << EscapeJson(loop.command.operationId)
+                        << "\",\"auction_id\":" << loop.auctionMailFilter.AuctionId
+                        << ",\"item_id\":" << loop.auctionMailFilter.ItemId
+                        << ",\"count\":" << loop.auctionMailFilter.Count
+                        << ",\"bid_copper\":" << loop.auctionMailFilter.Bid << ",\"outcome\":" << auctionOutcome << "}";
+                Publish("auction_proceeds", loop.command.requestId, payload.str());
+                FinishOperation(botAI, auctionOutcome != 0, "auction proceeds collected");
+                return;
+            }
+            ++loop.serviceCompleted;
+            loop.lastProgressMs = now;
+        }
+        if (loop.serviceCompleted >= loop.serviceLimit)
+        {
+            FinishOperation(botAI, true, "bounded mailbox collection completed");
+            return;
+        }
+        if (getMSTimeDiff(loop.lastInteractionMs, now) < 1000)
+            return;
+        loop.lastInteractionMs = now;
+        loop.mailboxWork = std::make_shared<AgentMailboxWork>();
+        if (loop.command.operation == "send_mail")
+        {
+            if (!PlayerbotWorldThreadProcessor::instance().QueueOperation(std::make_unique<AgentMailboxOperation>(
+                    botAI->GetBot()->GetGUID(), loop.target, loop.mailboxWork, loop.mailRecipient, loop.mailSubject,
+                    loop.mailBody, loop.mailItemGuid, loop.mailMoney, loop.serviceBudget)))
+                FinishOperation(botAI, false, "world-thread mailbox queue unavailable");
+            return;
+        }
+        if (!PlayerbotWorldThreadProcessor::instance().QueueOperation(std::make_unique<AgentMailboxOperation>(
+                botAI->GetBot()->GetGUID(), loop.target, loop.mailboxWork, loop.mailItemGuid, loop.auctionMailFilter)))
+            FinishOperation(botAI, false, "world-thread mailbox queue unavailable");
+    }
+
+    static uint64 EquipmentRepairQuote(Player* bot, Creature* vendor)
+    {
+        uint64 total = 0;
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        {
+            Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            if (!item)
+                continue;
+            uint32 const maximum = item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
+            uint32 const current = item->GetUInt32Value(ITEM_FIELD_DURABILITY);
+            if (current >= maximum)
+                continue;
+            ItemTemplate const* itemTemplate = item->GetTemplate();
+            DurabilityCostsEntry const* costs = sDurabilityCostsStore.LookupEntry(itemTemplate->ItemLevel);
+            DurabilityQualityEntry const* quality =
+                sDurabilityQualityStore.LookupEntry((itemTemplate->Quality + 1) * 2);
+            if (!costs || !quality)
+                return std::numeric_limits<uint64>::max();
+            uint32 const multiplier =
+                costs->multiplier[ItemSubClassToDurabilityMultiplierId(itemTemplate->Class, itemTemplate->SubClass)];
+            uint32 price = uint32((maximum - current) * multiplier * double(quality->quality_mod));
+            price = uint32(price * bot->GetReputationPriceDiscount(vendor) * sWorld->getRate(RATE_REPAIRCOST));
+            total += std::max(uint32(1), price);
+        }
+        return total;
+    }
+
+    void UpdateNPCService(PlayerbotAI* botAI, Creature* npc, uint32 now)
+    {
+        Player* bot = botAI->GetBot();
+        LocalOperation& loop = *localOperation;
+        std::string const operation = loop.command.operation;
+        if (!npc || !bot->GetNPCIfCanInteractWith(npc->GetGUID(), NPCServiceFlag(operation)))
+        {
+            FinishOperation(botAI, false, "NPC service unavailable");
+            return;
+        }
+        if (operation == "inspect_auctions" || operation == "buy_auction" || operation == "bid_auction")
+        {
+            if (!loop.auctionWork)
+            {
+                loop.auctionWork = std::make_shared<AgentAuctionWork>();
+                if (!PlayerbotWorldThreadProcessor::instance().QueueOperation(std::make_unique<AgentAuctionOperation>(
+                        bot->GetGUID(), loop.target, loop.auctionWork, loop.serviceId, loop.auctionCursor,
+                        loop.auctionId, loop.serviceLimit, loop.auctionBuyout, loop.serviceBudget, loop.auctionItemGuid,
+                        operation == "bid_auction")))
+                    FinishOperation(botAI, false, "world-thread auction queue unavailable");
+                return;
+            }
+            std::vector<AgentAuctionOffer> offers;
+            bool success, more;
+            uint32 nextCursor;
+            uint64 purchased;
+            {
+                std::lock_guard<std::mutex> guard(loop.auctionWork->Mutex);
+                if (!loop.auctionWork->Completed)
+                    return;
+                success = loop.auctionWork->Success;
+                more = loop.auctionWork->More;
+                nextCursor = loop.auctionWork->NextCursor;
+                purchased = loop.auctionWork->PurchasedItemGuid;
+                offers = loop.auctionWork->Offers;
+            }
+            if (!success)
+            {
+                FinishOperation(botAI, false, "auction changed or purchase unavailable; inspect fresh state");
+                return;
+            }
+            std::ostringstream payload;
+            payload << "{\"operation_id\":\"" << EscapeJson(loop.command.operationId) << "\",\"npc_guid\":\""
+                    << loop.target.GetRawValue() << "\",\"map_id\":" << loop.mapId << ",\"item_id\":" << loop.serviceId
+                    << ",\"inventory_count\":" << bot->GetItemCount(loop.serviceId, false)
+                    << ",\"cursor\":" << loop.auctionCursor << ",\"next_cursor\":" << nextCursor
+                    << ",\"more\":" << (more ? "true" : "false") << ",\"purchased_item_guid\":\"" << purchased
+                    << "\",\"auction_id\":" << loop.auctionId << ",\"bid_copper\":" << loop.auctionBuyout
+                    << ",\"offers\":[";
+            for (size_t index = 0; index < offers.size(); ++index)
+            {
+                if (index)
+                    payload << ",";
+                AgentAuctionOffer const& offer = offers[index];
+                payload << "{\"auction_id\":" << offer.AuctionId << ",\"item_id\":" << offer.ItemId
+                        << ",\"count\":" << offer.Count << ",\"buyout_copper\":" << offer.Buyout << ",\"item_guid\":\""
+                        << offer.ItemGuid << "\",\"minimum_bid_copper\":" << offer.MinimumBid
+                        << ",\"expires_at\":" << offer.ExpiresAt << "}";
+            }
+            payload << "]}";
+            Publish("auction_observation", loop.command.requestId, payload.str());
+            FinishOperation(botAI, true,
+                            operation == "inspect_auctions" ? "bounded auction page observed"
+                            : operation == "bid_auction"    ? "auction bid verified; outcome pending"
+                                                            : "auction buyout submitted; collect won mail");
+            return;
+        }
+        if (getMSTimeDiff(loop.lastInteractionMs, now) < 1000)
+            return;
+        loop.lastInteractionMs = now;
+        if (operation == "discover_flight_path" || operation == "take_flight")
+        {
+            uint32 const source = sObjectMgr->GetNearestTaxiNode(
+                npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ(), npc->GetMapId(), bot->GetTeamId());
+            if (operation == "discover_flight_path")
+            {
+                bot->GetSession()->SendLearnNewTaxiNode(npc);
+                FinishOperation(botAI, source && bot->m_taxi.IsTaximaskNodeKnown(source),
+                                "flight node discovery verified");
+                return;
+            }
+            uint32 path = 0;
+            uint32 cost = 0;
+            sObjectMgr->GetTaxiPath(source, loop.serviceId, path, cost);
+            uint32 const fare = uint32(std::ceil(cost * bot->GetReputationPriceDiscount(npc)));
+            if (!source || source == loop.serviceId || !path || !bot->m_taxi.IsTaximaskNodeKnown(source) ||
+                !bot->m_taxi.IsTaximaskNodeKnown(loop.serviceId) || fare > loop.serviceBudget || fare > bot->GetMoney())
+            {
+                FinishOperation(botAI, false, "flight nodes, direct route, or fare unavailable");
+                return;
+            }
+            if (!bot->ActivateTaxiPathTo({source, loop.serviceId}, npc, 1))
+            {
+                FinishOperation(botAI, false, "native taxi takeoff failed");
+                return;
+            }
+            loop.attempted = true;
+            loop.lastProgressMs = now;
+            return;
+        }
+        if (operation == "repair_equipment")
+        {
+            uint64 const quote = EquipmentRepairQuote(bot, npc);
+            if (quote > loop.serviceBudget || quote > bot->GetMoney())
+            {
+                FinishOperation(botAI, false, "equipment repair exceeds the available budget");
+                return;
+            }
+            for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+                bot->DurabilityRepair(uint16((INVENTORY_SLOT_BAG_0 << 8) | slot), true,
+                                      bot->GetReputationPriceDiscount(npc), false);
+            FinishOperation(botAI, EquipmentRepairQuote(bot, npc) == 0, "equipment repair verified");
+            return;
+        }
+        if (loop.serviceCompleted >= loop.serviceLimit)
+        {
+            FinishOperation(botAI, true, "bounded NPC service batch completed");
+            return;
+        }
+        if (operation == "sell_junk")
+        {
+            for (Item* item : botAI->GetInventoryItems())
+            {
+                if (!item || item->IsEquipped() || item->IsInTrade())
+                    continue;
+                ItemTemplate const* itemTemplate = item->GetTemplate();
+                if (itemTemplate->Quality != ITEM_QUALITY_POOR || !itemTemplate->SellPrice ||
+                    itemTemplate->Class == ITEM_CLASS_QUEST || itemTemplate->StartQuest ||
+                    itemTemplate->TotemCategory || bot->HasQuestForItem(item->GetEntry()) ||
+                    (itemTemplate->Class == ITEM_CLASS_WEAPON &&
+                     (itemTemplate->SubClass == ITEM_SUBCLASS_WEAPON_MISC ||
+                      itemTemplate->SubClass == ITEM_SUBCLASS_WEAPON_FISHING_POLE)))
+                    continue;
+                ObjectGuid const itemGuid = item->GetGUID();
+                WorldPacket packet(CMSG_SELL_ITEM);
+                packet << npc->GetGUID() << itemGuid << item->GetCount();
+                WorldPackets::Item::SellItem sale(std::move(packet));
+                sale.Read();
+                bot->GetSession()->HandleSellItemOpcode(sale);
+                if (bot->GetItemByGuid(itemGuid))
+                {
+                    FinishOperation(botAI, false, "junk sale was not verified");
+                    return;
+                }
+                ++loop.serviceCompleted;
+                loop.lastProgressMs = now;
+                return;
+            }
+            FinishOperation(botAI, true, "no eligible grey junk remains");
+            return;
+        }
+        if (operation == "buy_vendor_item")
+        {
+            VendorItemData const* stock = npc->GetVendorItems();
+            if (stock)
+                for (uint32 slot = 0; slot < stock->GetItemCount(); ++slot)
+                {
+                    VendorItem const* offer = stock->GetItem(slot);
+                    if (!offer || offer->item != loop.serviceId || offer->ExtendedCost)
+                        continue;
+                    ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(offer->item);
+                    if (!itemTemplate)
+                        continue;
+                    uint32 const price =
+                        uint32(std::floor(itemTemplate->BuyPrice * bot->GetReputationPriceDiscount(npc)));
+                    if (price > loop.serviceBudget - loop.serviceSpent || price > bot->GetMoney())
+                    {
+                        FinishOperation(botAI, false, "purchase exceeds the remaining budget");
+                        return;
+                    }
+                    uint32 const before = bot->GetItemCount(offer->item, false);
+                    uint32 const moneyBefore = bot->GetMoney();
+                    bot->BuyItemFromVendorSlot(npc->GetGUID(), slot, offer->item, 1, NULL_BAG, NULL_SLOT);
+                    if (bot->GetItemCount(offer->item, false) <= before)
+                    {
+                        FinishOperation(botAI, false, "vendor purchase was not verified");
+                        return;
+                    }
+                    loop.serviceSpent += moneyBefore - bot->GetMoney();
+                    ++loop.serviceCompleted;
+                    loop.lastProgressMs = now;
+                    return;
+                }
+            FinishOperation(botAI, false, "item is not offered for ordinary gold at this vendor");
+            return;
+        }
+        Trainer::Trainer* trainer = sObjectMgr->GetTrainer(npc->GetEntry());
+        if (!trainer || trainer->GetTrainerType() != Trainer::Type::Class || !trainer->IsTrainerValidForPlayer(bot))
+        {
+            FinishOperation(botAI, false, "a valid class trainer is required");
+            return;
+        }
+        bool unaffordable = false;
+        for (Trainer::Spell const& spell : trainer->GetSpells())
+        {
+            if (!trainer->CanTeachSpell(bot, &spell))
+                continue;
+            uint32 const price = uint32(spell.MoneyCost * bot->GetReputationPriceDiscount(npc));
+            if (price > loop.serviceBudget - loop.serviceSpent || price > bot->GetMoney())
+            {
+                unaffordable = true;
+                continue;
+            }
+            uint32 const moneyBefore = bot->GetMoney();
+            trainer->TeachSpell(npc, bot, spell.SpellId);
+            bool learned = bot->HasSpell(spell.SpellId);
+            if (spell.IsCastable())
+            {
+                learned = false;
+                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spell.SpellId))
+                {
+                    bool hasLearnEffect = false;
+                    bool knowsAll = true;
+                    for (SpellEffectInfo const& effect : info->GetEffects())
+                        if (effect.IsEffect(SPELL_EFFECT_LEARN_SPELL))
+                        {
+                            hasLearnEffect = true;
+                            knowsAll = knowsAll && bot->HasSpell(effect.TriggerSpell);
+                        }
+                    learned = hasLearnEffect && knowsAll;
+                }
+            }
+            if (!learned)
+            {
+                FinishOperation(botAI, false, "trainer did not confirm the learned spell");
+                return;
+            }
+            loop.serviceSpent += moneyBefore - bot->GetMoney();
+            ++loop.serviceCompleted;
+            loop.lastProgressMs = now;
+            return;
+        }
+        FinishOperation(
+            botAI, !unaffordable,
+            unaffordable ? "eligible training exceeds the remaining budget" : "eligible class training completed");
+    }
+
+    void LogOperationBlock(std::string const& block)
+    {
+        if (!localOperation || localOperation->diagnosticBlock == block)
+            return;
+        LOG_DEBUG("playerbots.agent",
+                  "Operation priority bot={} operation_id={} operation={} previous_block={} block={}",
+                  botGuid.ToString(), localOperation->command.operationId, localOperation->command.operation,
+                  localOperation->diagnosticBlock, block);
+        localOperation->diagnosticBlock = block;
+    }
+
     void UpdateOperation(PlayerbotAI* botAI, uint32 elapsed)
     {
         if (!localOperation)
@@ -1034,14 +1865,54 @@ struct AgentRuntime::Impl
         bool const assist = operation == "assist_leader";
         bool const travelOperation = operation == "navigate_to_destination" ||
                                      operation == "navigate_to_quest_objective" ||
-                                     operation == "navigate_to_quest_turnin" || operation == "navigate_to_quest_giver";
+                                     operation == "navigate_to_quest_turnin" ||
+                                     operation == "navigate_to_quest_giver" || operation == "take_flight";
         if (!bot->IsAlive() || (!travelOperation && bot->GetMapId() != loop.mapId))
         {
             FinishOperation(botAI, false, "bot died or left the operation map");
             return;
         }
+        if (operation == "receive_trade_material")
+        {
+            if (!loop.materialTradeWork)
+            {
+                loop.materialTradeWork = std::make_shared<AgentMaterialTradeWork>();
+                if (!PlayerbotWorldThreadProcessor::instance().QueueOperation(
+                        std::make_unique<AgentMaterialTradeOperation>(bot->GetGUID(), loop.target,
+                                                                      loop.materialTradeRevision, loop.tradeMaterials,
+                                                                      loop.serviceBudget, loop.materialTradeWork)))
+                    FinishOperation(botAI, false, "world-thread material trade queue unavailable");
+                return;
+            }
+            bool success;
+            {
+                std::lock_guard<std::mutex> guard(loop.materialTradeWork->Mutex);
+                if (!loop.materialTradeWork->Completed)
+                    return;
+                success = loop.materialTradeWork->Success;
+            }
+            FinishOperation(botAI, success,
+                            success ? "trade material transfer verified"
+                                    : "trade offer changed or transfer unverified; inspect inventory");
+            return;
+        }
         if (bot->GetTradeData() || (bot->IsInCombat() && !combat && !assist))
         {
+            if (operation == "craft_once" && loop.attempted)
+            {
+                FinishOperation(botAI, false, "crafting interrupted by combat or trade; inspect inventory");
+                return;
+            }
+            LogOperationBlock(bot->GetTradeData() ? "trade" : "combat");
+            if (operation == "fish_once")
+            {
+                bot->InterruptNonMeleeSpells(false, FISHING_SPELL);
+                if (loop.attempted)
+                {
+                    FinishOperation(botAI, false, "fishing interrupted by combat or trade");
+                    return;
+                }
+            }
             if (!loop.paused && !bot->IsInCombat())
             {
                 bot->GetMotionMaster()->Clear();
@@ -1053,8 +1924,44 @@ struct AgentRuntime::Impl
             return;
         }
         loop.paused = false;
-        if (!botAI->CanMove() || bot->IsNonMeleeSpellCast(false))
+        if (operation == "craft_once")
+        {
+            UpdateCrafting(botAI, now);
             return;
+        }
+        if (operation == "take_flight" && loop.attempted)
+        {
+            LogOperationBlock("");
+            if (bot->IsInFlight())
+            {
+                loop.lastProgressMs = now;
+                if (getMSTimeDiff(loop.lastReportMs, now) >= AGENT_OPERATION_PROGRESS_MS)
+                {
+                    loop.lastReportMs = now;
+                    Publish("primitive_progress", "",
+                            "{\"operation_id\":\"" + EscapeJson(loop.command.operationId) +
+                                "\",\"snapshot\":" + BuildSnapshot(botAI) + "}");
+                }
+                return;
+            }
+            TaxiNodesEntry const* destination = sTaxiNodesStore.LookupEntry(loop.serviceId);
+            bool const arrived = destination && destination->map_id == bot->GetMapId() &&
+                                 bot->GetDistance(destination->x, destination->y, destination->z) <= 40.0f;
+            FinishOperation(botAI, arrived, arrived ? "flight destination reached" : "flight ended before destination");
+            return;
+        }
+        if (operation == "fish_once")
+        {
+            LogOperationBlock("");
+            UpdateFishing(botAI, now);
+            return;  // Fishing is a channeled spell; the general casting guard must not stall it.
+        }
+        if (!botAI->CanMove() || bot->IsNonMeleeSpellCast(false))
+        {
+            LogOperationBlock(bot->IsNonMeleeSpellCast(false) ? "casting" : "movement_disabled");
+            return;
+        }
+        LogOperationBlock("");
         if (loop.position.GetExactDist(bot) >= 1.0f)
         {
             loop.position.Relocate(bot);
@@ -1074,7 +1981,7 @@ struct AgentRuntime::Impl
         }
 
         if (operation == "navigate_to_destination" || operation == "navigate_to_quest_objective" ||
-            operation == "navigate_to_quest_turnin")
+            operation == "navigate_to_quest_turnin" || operation == "navigate_to_quest_giver")
         {
             TravelTarget* travel = botAI->GetAiObjectContext()->GetValue<TravelTarget*>("travel target")->Get();
             if (!travel || travel->getDestination() == TravelMgr::instance().nullTravelDestination)
@@ -1091,6 +1998,24 @@ struct AgentRuntime::Impl
         {
             if (loop.movementStarted && !bot->isMoving())
                 FinishOperation(botAI, true, "search segment reached");
+            return;
+        }
+        if (operation == "navigate_to_position")
+        {
+            Position const& destination = loop.navigationPosition;
+            if (bot->GetExactDist(destination.GetPositionX(), destination.GetPositionY(), destination.GetPositionZ()) <=
+                loop.distance)
+            {
+                FinishOperation(botAI, true, "observed position reached");
+                return;
+            }
+            if (!bot->isMoving() && (!loop.lastMoveAttemptMs || getMSTimeDiff(loop.lastMoveAttemptMs, now) >= 1000))
+            {
+                loop.lastMoveAttemptMs = now;
+                AgentMoveToTargetAction movement(botAI);
+                loop.movementStarted = movement.MoveToPosition(loop.mapId, destination.GetPositionX(),
+                                                               destination.GetPositionY(), destination.GetPositionZ());
+            }
             return;
         }
         if (operation == "assist_leader")
@@ -1157,9 +2082,30 @@ struct AgentRuntime::Impl
         if (!target || !target->IsInWorld() || target->GetMap() != bot->GetMap() ||
             (target->ToUnit() && target->ToUnit()->IsDuringRemoveFromWorld()))
         {
-            FinishOperation(botAI, loop.attempted && (operation == "loot_target" || operation == "gather_target"),
-                            "operation target disappeared");
+            FinishOperation(
+                botAI,
+                !loop.corpseOnly && loop.attempted && (operation == "loot_target" || operation == "gather_target"),
+                "operation target disappeared");
             return;
+        }
+        if (loop.corpseOnly)
+        {
+            Creature* corpse = target->ToCreature();
+            if (!corpse || corpse->IsAlive())
+            {
+                FinishOperation(botAI, false, "corpse target unavailable");
+                return;
+            }
+            if (!corpse->HasFlag(UNIT_DYNAMIC_FLAGS, UNIT_DYNFLAG_LOOTABLE))
+            {
+                FinishOperation(botAI, true, "corpse loot exhausted");
+                return;
+            }
+            if (!bot->isAllowedToLoot(corpse))
+            {
+                FinishOperation(botAI, false, "corpse loot rights unavailable");
+                return;
+            }
         }
         if (combat)
         {
@@ -1232,13 +2178,24 @@ struct AgentRuntime::Impl
             loop.movementStarted = false;
             return;
         }
+        if (IsNPCService(operation))
+        {
+            UpdateNPCService(botAI, target->ToCreature(), now);
+            return;
+        }
+        if (operation == "collect_mail" || operation == "send_mail")
+        {
+            UpdateMailbox(botAI, now);
+            return;
+        }
         if (operation == "loot_target" || operation == "gather_target")
         {
             LootObject loot(bot, loop.target);
             if (!loot.IsLootPossible(bot))
             {
-                FinishOperation(botAI, loop.attempted,
-                                loop.attempted ? "loot or gather completed" : "loot unavailable");
+                FinishOperation(botAI, !loop.corpseOnly && loop.attempted,
+                                loop.corpseOnly ? "corpse loot unavailable"
+                                                : (loop.attempted ? "loot or gather completed" : "loot unavailable"));
                 return;
             }
             if (getMSTimeDiff(loop.lastInteractionMs, now) < 1000)
@@ -1338,12 +2295,67 @@ struct AgentRuntime::Impl
 
             if (command.operation == "snapshot")
             {
-                PublishSnapshot(botAI, command);
+                uint32 const offset = GetUInt(arguments, "recipe_offset");
+                uint32 const itemId = GetUInt(arguments, "recipe_item_id");
+                if (offset > AGENT_MAX_CRAFTING_RECIPE_OFFSET || (offset && itemId))
+                {
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "invalid crafting recipe inspection range");
+                    return;
+                }
+                PublishSnapshot(botAI, command, GetUInt(arguments, "craft_item_id"), offset, itemId);
                 return;
             }
             if (command.operation == "send_chat")
             {
                 SendChat(botAI, arguments, command);
+                return;
+            }
+            if (command.operation == "receive_trade_material")
+            {
+                Player* partner = botAI->GetBot()->GetTrader();
+                uint32 const itemId = GetUInt(arguments, "item_id");
+                uint32 const count = GetUInt(arguments, "count");
+                uint64 const revision = GetUInt64(arguments, "trade_revision");
+                ObjectGuid const partnerGuid(GetUInt64(arguments, "target_guid"));
+                if (!partner || partner->GetGUID() != partnerGuid || !itemId || !count ||
+                    count > AGENT_MAX_SNAPSHOT_ITEMS || !arguments.get_optional<uint64>("trade_revision") ||
+                    revision != tradeRevision.load())
+                {
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "material trade unavailable or changed");
+                    return;
+                }
+                StartOperation(botAI, command, partnerGuid);
+                localOperation->materialTradeRevision = revision;
+                localOperation->serviceId = itemId;
+                localOperation->serviceLimit = count;
+                localOperation->serviceBudget = GetUInt(arguments, "max_spend_copper");
+                if (auto materials = arguments.get_child_optional("materials"))
+                {
+                    uint64 total = 0;
+                    std::set<uint32> seen;
+                    for (auto const& [key, material] : *materials)
+                    {
+                        uint32 const materialId = GetUInt(material, "item_id");
+                        uint32 const quantity = GetUInt(material, "count");
+                        if (!materialId || !quantity || !seen.insert(materialId).second ||
+                            localOperation->tradeMaterials.size() >= TRADE_SLOT_TRADED_COUNT)
+                        {
+                            FinishOperation(botAI, false, "invalid material trade composition");
+                            return;
+                        }
+                        total += quantity;
+                        localOperation->tradeMaterials.push_back({materialId, quantity});
+                    }
+                    if (total != count)
+                    {
+                        FinishOperation(botAI, false, "material trade quantity mismatch");
+                        return;
+                    }
+                }
+                else
+                    localOperation->tradeMaterials.push_back({itemId, count});
                 return;
             }
             if (command.operation == "begin_trade" || command.operation == "accept_trade" ||
@@ -1505,6 +2517,109 @@ struct AgentRuntime::Impl
                               "invite declined");
                 return;
             }
+            if (command.operation == "craft_once")
+            {
+                uint32 const spellId = GetUInt(arguments, "spell_id");
+                uint32 itemId = 0;
+                if (!CraftOutput(botAI->GetBot(), spellId, itemId) || itemId != GetUInt(arguments, "item_id"))
+                {
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "a known deterministic trade recipe and matching output are required");
+                    return;
+                }
+                StartOperation(botAI, command);
+                localOperation->serviceId = spellId;
+                localOperation->craftItemId = itemId;
+                return;
+            }
+            if (command.operation == "fish_once")
+            {
+                Player* bot = botAI->GetBot();
+                Item* pole = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
+                bool const validPole = pole && pole->GetTemplate()->Class == ITEM_CLASS_WEAPON &&
+                                       pole->GetTemplate()->SubClass == ITEM_SUBCLASS_WEAPON_FISHING_POLE;
+                if (!validPole || !bot->HasSpell(FISHING_SPELL) || !bot->GetSkillValue(SKILL_FISHING) ||
+                    bot->GetGameObject(FISHING_SPELL))
+                {
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "fishing requires learned skill, an equipped pole, and no existing bobber");
+                    return;
+                }
+                StartOperation(botAI, command);
+                return;
+            }
+            if (command.operation == "collect_mail" || command.operation == "send_mail")
+            {
+                ObjectGuid const mailboxGuid(GetUInt64(arguments, "target_guid"));
+                GameObject* mailbox = botAI->GetGameObject(mailboxGuid);
+                uint32 const limit = GetUInt(arguments, "count");
+                if (!mailbox || mailbox->GetGoType() != GAMEOBJECT_TYPE_MAILBOX || !mailbox->isSpawned() ||
+                    limit == 0 || limit > AGENT_MAX_SNAPSHOT_ITEMS)
+                {
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "invalid mailbox collection request");
+                    return;
+                }
+                StartOperation(botAI, command, mailboxGuid);
+                localOperation->serviceLimit = limit;
+                localOperation->mailItemGuid = ObjectGuid(GetUInt64(arguments, "collect_item_guid"));
+                localOperation->auctionMailFilter = {GetUInt(arguments, "collect_auction_id"),
+                                                     GetUInt(arguments, "item_id"), GetUInt(arguments, "item_count"),
+                                                     GetUInt(arguments, "bid_copper")};
+                if (localOperation->auctionMailFilter.AuctionId &&
+                    (!localOperation->auctionMailFilter.ItemId || !localOperation->auctionMailFilter.Count ||
+                     !localOperation->auctionMailFilter.Bid || localOperation->mailItemGuid.IsEmpty()))
+                {
+                    FinishOperation(botAI, false, "invalid auction proceeds request");
+                    return;
+                }
+                if (command.operation == "send_mail")
+                {
+                    localOperation->mailRecipient = GetString(arguments, "recipient");
+                    localOperation->mailSubject = GetString(arguments, "subject");
+                    localOperation->mailBody = GetString(arguments, "body");
+                    localOperation->mailItemGuid = ObjectGuid(GetUInt64(arguments, "item_guid"));
+                    localOperation->mailMoney = GetUInt(arguments, "money_copper");
+                    localOperation->serviceBudget = GetUInt(arguments, "max_spend_copper");
+                    auto const validText = [](std::string const& text, size_t maximum)
+                    { return text.size() <= maximum && text.find('\0') == std::string::npos; };
+                    if (localOperation->mailRecipient.empty() || !validText(localOperation->mailRecipient, 48) ||
+                        !validText(localOperation->mailSubject, 128) || !validText(localOperation->mailBody, 4096))
+                        FinishOperation(botAI, false, "invalid mail text or recipient");
+                }
+                return;
+            }
+            if (IsNPCService(command.operation))
+            {
+                ObjectGuid const npcGuid(GetUInt64(arguments, "target_guid"));
+                Creature* npc = botAI->GetCreature(npcGuid);
+                uint32 const limit = GetUInt(arguments, "count");
+                uint32 const budget = GetUInt(arguments, "max_spend_copper");
+                uint32 const itemId =
+                    GetUInt(arguments, command.operation == "take_flight" ? "destination_node" : "item_id");
+                if (!npc || !npc->IsAlive() || !npc->HasNpcFlag(NPCServiceFlag(command.operation)) || limit == 0 ||
+                    limit > AGENT_MAX_SNAPSHOT_ITEMS ||
+                    ((command.operation == "buy_vendor_item" || command.operation == "inspect_auctions" ||
+                      command.operation == "buy_auction" || command.operation == "bid_auction") &&
+                     !itemId) ||
+                    ((command.operation == "buy_auction" || command.operation == "bid_auction") &&
+                     (!GetUInt(arguments, "auction_id") || !GetUInt(arguments, "buyout_copper"))))
+                {
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "invalid NPC service request");
+                    return;
+                }
+                StartOperation(botAI, command, npcGuid);
+                localOperation->serviceId = itemId;
+                localOperation->serviceLimit = limit;
+                localOperation->serviceBudget = budget;
+                localOperation->auctionId =
+                    command.operation == "inspect_auctions" ? 0 : GetUInt(arguments, "auction_id");
+                localOperation->auctionCursor = GetUInt(arguments, "cursor");
+                localOperation->auctionBuyout = GetUInt(arguments, "buyout_copper");
+                localOperation->auctionItemGuid = ObjectGuid(GetUInt64(arguments, "item_guid"));
+                return;
+            }
             if (command.operation == "interact_quest_giver")
             {
                 ObjectGuid const giverGuid(GetUInt64(arguments, "target_guid"));
@@ -1533,6 +2648,25 @@ struct AgentRuntime::Impl
                 else
                     PublishResult(command.requestId, command.operationId, command.operation, "rejected",
                                   "object unavailable", objectGuid);
+                return;
+            }
+            if (command.operation == "navigate_to_position")
+            {
+                uint32 const mapId = GetUInt(arguments, "map_id");
+                float const x = arguments.get<float>("x");
+                float const y = arguments.get<float>("y");
+                float const z = arguments.get<float>("z");
+                constexpr float coordinateLimit = 20000.0f;
+                if (mapId != botAI->GetBot()->GetMapId() || !std::isfinite(x) || !std::isfinite(y) ||
+                    !std::isfinite(z) || std::abs(x) > coordinateLimit || std::abs(y) > coordinateLimit ||
+                    std::abs(z) > coordinateLimit)
+                {
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "invalid same-map navigation position");
+                    return;
+                }
+                StartOperation(botAI, command, ObjectGuid::Empty, 10.0f);
+                localOperation->navigationPosition.Relocate(x, y, z);
                 return;
             }
             if (command.operation == "navigate_to_destination")
@@ -1640,6 +2774,7 @@ struct AgentRuntime::Impl
                 command.operation == "gather_target")
             {
                 ObjectGuid const requestedTarget(GetUInt64(arguments, "target_guid"));
+                bool const corpseOnly = command.operation == "loot_target" && arguments.get<bool>("corpse_only", false);
                 if (!requestedTarget)
                 {
                     PublishResult(command.requestId, command.operationId, command.operation, "rejected",
@@ -1660,6 +2795,23 @@ struct AgentRuntime::Impl
                     return;
                 }
 
+                if (corpseOnly)
+                {
+                    Creature* corpse = botAI->GetCreature(requestedTarget);
+                    if (!corpse || !corpse->IsInWorld() || corpse->IsAlive() ||
+                        corpse->GetMap() != botAI->GetBot()->GetMap())
+                    {
+                        PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                      "corpse target unavailable", requestedTarget);
+                        return;
+                    }
+                    if (!corpse->HasFlag(UNIT_DYNAMIC_FLAGS, UNIT_DYNFLAG_LOOTABLE))
+                    {
+                        PublishResult(command.requestId, command.operationId, command.operation, "completed",
+                                      "corpse has no remaining loot", requestedTarget, true);
+                        return;
+                    }
+                }
                 LootObject loot(botAI->GetBot(), requestedTarget);
                 if (!loot.IsLootPossible(botAI->GetBot()))
                 {
@@ -1676,7 +2828,7 @@ struct AgentRuntime::Impl
                     return;
                 }
                 botAI->GetAiObjectContext()->GetValue<LootObjectStack*>("available loot")->Get()->Add(requestedTarget);
-                StartOperation(botAI, command, requestedTarget);
+                StartOperation(botAI, command, requestedTarget, 2.0f, 0, corpseOnly);
                 return;
             }
 
@@ -1749,10 +2901,94 @@ AgentRuntime::~AgentRuntime()
 {
     if (m_impl)
     {
+        if (m_impl->localOperation && m_impl->localOperation->mailboxWork)
+            m_impl->localOperation->mailboxWork->Cancelled.store(true);
         if (m_impl->initialized && !m_impl->stopped)
             m_impl->Publish("bot_offline", "", "{}");
         AgentBridgeTransport::Unregister(m_impl->botGuidToken, m_impl->inbox);
     }
+}
+
+void AgentRuntime::OnLootResponse(WorldPacket const& packet)
+{
+    // SendPacket hooks can run outside the bot's map tick. Only read the atomic
+    // target and the packet here; Publish protects its outbound state with a mutex.
+    uint64 const expected = m_impl->gatheringObservationTarget.load(std::memory_order_acquire);
+    if (!expected || packet.size() < 14)
+        return;
+    try
+    {
+        WorldPacket response(packet);
+        response.rpos(0);
+        ObjectGuid source;
+        uint8 itemCount = 0;
+        response >> source;
+        response.read_skip<uint8>();   // loot type
+        response.read_skip<uint32>();  // money
+        response >> itemCount;
+        if (source.GetRawValue() != expected || (!source.IsGameObject() && !source.IsCreature()) || !source.GetEntry())
+            return;
+        std::set<uint32> observed;
+        for (uint32 index = 0; index < std::min(uint32(itemCount), AGENT_MAX_OBSERVED_DROP_ITEMS); ++index)
+        {
+            uint32 itemId = 0;
+            uint32 count = 0;
+            uint8 slotType = 0;
+            response.read_skip<uint8>();  // loot slot
+            response >> itemId >> count;
+            response.read_skip<uint32>();  // display id
+            response.read_skip<uint32>();  // random suffix
+            response.read_skip<uint32>();  // random property
+            response >> slotType;
+            if (itemId && count && (slotType == LOOT_SLOT_TYPE_ALLOW_LOOT || slotType == LOOT_SLOT_TYPE_OWNER))
+                observed.insert(itemId);
+        }
+        if (observed.empty())
+            return;
+        std::string location;
+        {
+            std::lock_guard<std::mutex> guard(m_impl->gatheringLocationMutex);
+            if (m_impl->gatheringLocationGuid != source)
+                return;
+            location = m_impl->gatheringLocationJson;
+        }
+        std::ostringstream payload;
+        payload << "{\"source_kind\":\"" << (source.IsGameObject() ? "gameobject" : "creature")
+                << "\",\"source_entry\":" << source.GetEntry() << ",\"item_ids\":[";
+        bool first = true;
+        for (uint32 const itemId : observed)
+        {
+            if (!first)
+                payload << ",";
+            first = false;
+            payload << itemId;
+        }
+        payload << "]" << location << "}";
+        m_impl->Publish("gathering_source_observed", "", payload.str());
+    }
+    catch (std::exception const&)
+    {
+        LOG_DEBUG("playerbots.agent", "Ignored malformed gathering loot observation for {}",
+                  m_impl->botGuid.ToString());
+    }
+}
+
+void AgentRuntime::OnAuctionBidderNotification(WorldPacket const& packet)
+{
+    if (!m_impl->remoteControlActive.load(std::memory_order_acquire) || packet.size() < 28)
+        return;
+    WorldPacket notification(packet);
+    notification.rpos(0);
+    uint32 auctionId = 0, amount = 0, itemId = 0;
+    ObjectGuid bidder;
+    notification.read_skip<uint32>();  // house
+    notification >> auctionId >> bidder >> amount;
+    notification.read_skip<uint32>();  // next-bid increment
+    notification >> itemId;
+    std::ostringstream payload;
+    payload << "{\"auction_id\":" << auctionId << ",\"item_id\":" << itemId << ",\"bid_copper\":" << amount
+            << ",\"own_bidder\":" << (bidder == m_impl->botGuid ? "true" : "false") << "}";
+    m_impl->Publish("auction_bid_notification", "", payload.str());
 }
 
 bool AgentRuntime::IsSupported()

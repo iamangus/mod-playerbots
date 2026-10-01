@@ -7,8 +7,6 @@
 #ifndef PLAYERBOTS_PLAYERBOTAICONFIG_H
 #define PLAYERBOTS_PLAYERBOTAICONFIG_H
 
-#include "DBCEnums.h"
-#include "SharedDefines.h"
 #include <algorithm>
 #include <map>
 #include <mutex>
@@ -16,6 +14,9 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "DBCEnums.h"
+#include "SharedDefines.h"
 
 enum class BotCheatMask : uint32
 {
@@ -56,7 +57,7 @@ enum class AutoPartyBuffMode : uint8
 
 enum NewRpgStatus : int
 {
-    //Initial Status
+    // Initial Status
     RPG_IDLE = 0,
     RPG_GO_GRIND = 1,
     RPG_GO_CAMP = 2,
@@ -188,6 +189,7 @@ public:
     uint32 agentBridgeMaxMessageLength = 240;
     std::string agentBridgeSubjectPrefix = "playerbots.v1";
     bool agentBridgePopulationEnabled = false;
+    bool agentBridgeSocialProgressionEnabled = false;
     uint32 agentBridgePlayerCohortMaxLevel = 10;
     uint32 agentBridgePopulationSnapshotInterval = 60000;
     bool randomBotAutoRandomize = true;
@@ -434,25 +436,11 @@ public:
     int32 addClassCommand;
     int32 addClassAccountPoolSize;
     int32 maintenanceCommand;
-    bool altMaintenanceAttunementQs,
-            altMaintenanceBags,
-            altMaintenanceAmmo,
-            altMaintenanceFood,
-            altMaintenanceReagents,
-            altMaintenanceConsumables,
-            altMaintenancePotions,
-            altMaintenanceTalentTree,
-            altMaintenancePet,
-            altMaintenancePetTalents,
-            altMaintenanceClassSpells,
-            altMaintenanceAvailableSpells,
-            altMaintenanceSkills,
-            altMaintenanceReputation,
-            altMaintenanceSpecialSpells,
-            altMaintenanceMounts,
-            altMaintenanceGlyphs,
-            altMaintenanceKeyring,
-            altMaintenanceGemsEnchants;
+    bool altMaintenanceAttunementQs, altMaintenanceBags, altMaintenanceAmmo, altMaintenanceFood, altMaintenanceReagents,
+        altMaintenanceConsumables, altMaintenancePotions, altMaintenanceTalentTree, altMaintenancePet,
+        altMaintenancePetTalents, altMaintenanceClassSpells, altMaintenanceAvailableSpells, altMaintenanceSkills,
+        altMaintenanceReputation, altMaintenanceSpecialSpells, altMaintenanceMounts, altMaintenanceGlyphs,
+        altMaintenanceKeyring, altMaintenanceGemsEnchants;
     int32 autoGearCommand, autoGearCommandAltBots, autoGearQualityLimit, autoGearScoreLimit;
     int32 autoGearBisCommand;
 

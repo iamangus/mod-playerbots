@@ -2581,6 +2581,12 @@ AiPlayerbot.AgentBridge.MaxMessageLength = 240
 # Requires the agent bridge. Disabled by default.
 # Default: 0 (disabled)
 AiPlayerbot.AgentBridge.Population.Enabled = 0
+
+# Prefer explicitly friend-linked bots in the existing capped login scheduler.
+# Requires the population bridge and charserver's authoritative social observations.
+# Fresh online friendship extends ordinary bot sessions; missing/stale observations
+# fall back to ordinary scheduling. Does not force logout, teleport, or grant XP.
+AiPlayerbot.AgentBridge.SocialProgression.Enabled = 0
 # Real players at or below this level publish a player_first_entry event so the
 # external controller can create a companion bot cohort. Higher-level players
 # are never treated as new arrivals.
