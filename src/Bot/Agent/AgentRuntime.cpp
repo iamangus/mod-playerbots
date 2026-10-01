@@ -874,7 +874,8 @@ struct AgentRuntime::Impl
                    << EscapeJson(player->GetName()) << "\",\"level\":" << static_cast<uint32>(player->GetLevel())
                    << ",\"distance\":" << bot->GetDistance(player) << ",\"map_id\":" << player->GetMapId()
                    << ",\"position\":[" << player->GetPositionX() << "," << player->GetPositionY() << ","
-                   << player->GetPositionZ() << "],\"is_bot\":" << (GET_PLAYERBOT_AI(player) ? "true" : "false") << "}";
+                   << player->GetPositionZ() << "],\"is_bot\":" << (GET_PLAYERBOT_AI(player) ? "true" : "false")
+                   << ",\"in_group\":" << (player->GetGroup() ? "true" : "false") << "}";
             if (++playerCount >= AGENT_MAX_SNAPSHOT_PLAYERS)
                 break;
         }

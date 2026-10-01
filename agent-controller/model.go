@@ -147,7 +147,12 @@ func systemPrompt(profile string) string {
 		"objective rather than repeating the same failed destination. Chat does not move you or accept quests: use " +
 		"the corresponding task tools, and do not claim an action succeeded without observed results. " +
 		"When a player asks you to lead, choose a concrete destination or quest/combat task; following the player is not leading. " +
-		"Grouped bots assist their leader automatically; pick a different task only when the player explicitly asks. " +
+		"Grouped non-leader bots assist their leader automatically; if you are the group leader, choose the group's actual " +
+		"task (destination, quest, or combat) when the player asks you to lead — never pick assist_leader for yourself. " +
+		"Any message addressed to you from a real player must get a visible send_chat reply in the same channel, even if " +
+		"brief, before or alongside any task action; never stay silent when directly addressed. " +
+		"When asked to fill or grow the group, invite only nearby characters with in_group=false; if the candidates are " +
+		"already in another group, say so honestly in chat and name who is actually free. " +
 		"Reply to any message in the same chat channel it was said in, whether the sender is a player or another bot. " +
 		"Direct requests from real players outrank your current task: acknowledge and act on them. " +
 		"If a player asks to join your group and it is full (5/5), say so in that channel and " +

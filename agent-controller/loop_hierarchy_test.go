@@ -101,20 +101,33 @@ func TestAssistLeaderStartsPersistentPrimitive(t *testing.T) {
 
 func TestGroupedBotAutoAssistsWithoutTask(t *testing.T) {
 	a, commands := loopTestActor(t)
+	a.latest.Bot.GUID = "GUID_Full__0x0000000000000001_Type__Player_Low__1"
+	a.latest.Bot.GroupLeaderGUID = "GUID_Full__0x0000000000000002_Type__Player_Low__2"
 	a.latest.Bot.GroupSize = 2
-	a.handleEvent(event{Type: "snapshot", Payload: json.RawMessage(`{"schema_version":1,"bot":{"level":2,"group_size":2}}`)})
+	a.handleEvent(event{Type: "snapshot", Payload: json.RawMessage(
+		`{"schema_version":1,"bot":{"guid":"GUID_Full__0x0000000000000001_Type__Player_Low__1","group_leader_guid":"GUID_Full__0x0000000000000002_Type__Player_Low__2","group_size":2}}`)})
 	if a.state.Task == nil || a.state.Task.Kind != "assist_leader" {
 		t.Fatal("grouped bot without a task did not start assisting")
 	}
 	if cmd := nextLoopCommand(t, commands); cmd.Operation != "assist_leader" {
 		t.Fatalf("operation=%s", cmd.Operation)
 	}
-	// An explicit task wins over the automatic default.
+	// The group leader never assists; leading is its own job.
 	b, _ := loopTestActor(t)
+	b.latest.Bot.GUID = "GUID_Full__0x0000000000000001_Type__Player_Low__1"
+	b.latest.Bot.GroupLeaderGUID = b.latest.Bot.GUID
 	b.latest.Bot.GroupSize = 2
-	b.state.Task = &task{Kind: "kill_count", Phase: "combat", OperationID: "op", LastProgressUTC: time.Now()}
-	b.handleEvent(event{Type: "snapshot", Payload: json.RawMessage(`{"schema_version":1,"bot":{"level":2,"group_size":2}}`)})
-	if b.state.Task.Kind != "kill_count" {
+	b.handleEvent(event{Type: "snapshot", Payload: json.RawMessage(
+		`{"schema_version":1,"bot":{"guid":"GUID_Full__0x0000000000000001_Type__Player_Low__1","group_leader_guid":"GUID_Full__0x0000000000000001_Type__Player_Low__1","group_size":2}}`)})
+	if b.state.Task != nil {
+		t.Fatal("leader was assigned assist_leader automatically")
+	}
+	// An explicit task wins over the automatic default.
+	c, _ := loopTestActor(t)
+	c.latest.Bot.GroupSize = 2
+	c.state.Task = &task{Kind: "kill_count", Phase: "combat", OperationID: "op", LastProgressUTC: time.Now()}
+	c.handleEvent(event{Type: "snapshot", Payload: json.RawMessage(`{"schema_version":1,"bot":{"guid":"GUID_Full__0x0000000000000003_Type__Player_Low__3","group_leader_guid":"GUID_Full__0x0000000000000002_Type__Player_Low__2","group_size":2}}`)})
+	if c.state.Task.Kind != "kill_count" {
 		t.Fatal("automatic assist replaced an explicit task")
 	}
 }
