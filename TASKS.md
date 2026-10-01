@@ -44,19 +44,24 @@ state and unpredictable interruptions are hard. New loops are expected and norma
 
 **Progress:**
 - Audited engine docs, controller task/phase machinery, and core AgentRuntime primitives.
-- Found real prerequisite bug: core sends `in_group` on nearby players; controller decode
-  dropped it. Fixed in this task.
-- Implementing item 1 (quest acceptance): core `accept_quest` + `navigate_to_quest_giver`
-  operations, `available_quests` in snapshots, controller task loop, tool + prompt, tests.
-- Controller is intentionally left scaled to 0 replicas; verify via tests/codestyle only.
+- Item 1 (quest acceptance) implemented, tested, committed as c9106418:
+  core `accept_quest` + `navigate_to_quest_giver` operations, `available_quests`
+  snapshot section (bounded 12 quests, 3 per giver), quest-giver destination lookup,
+  controller travel/accept task phases, tool + prompt line, 7 new tests
+  (`go test -race` passes), codestyle + clang-format pass.
+- Item 2 prerequisite fixed in the same commit: controller retains `in_group`.
+- Next: item 2 (loot-all batch loop), then vendor/trainer/fishing loops.
+- Controller intentionally left scaled to 0 replicas; core changes go live only
+  after a user-authorized build/deploy.
 
-### TASK-002 — Fix nearby-player `in_group` retention (in progress, part of TASK-001 work)
+### TASK-002 — Fix nearby-player `in_group` retention (done)
 
 **Original request (context):** "They dont seem to see who they are in a group with" and the
 group-confusion reports; the LLM cannot see which nearby characters are already grouped because
 the controller dropped the `in_group` field during snapshot decode.
 
-**Progress:** `playerInfo` now decodes `in_group`; test added.
+**Outcome:** `playerInfo` now decodes `in_group`; regression test
+`TestSnapshotRetainsNearbyPlayerInGroup` added. Shipped in commit c9106418.
 
 ## Completed
 
