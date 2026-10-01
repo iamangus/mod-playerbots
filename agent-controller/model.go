@@ -159,6 +159,8 @@ func systemPrompt(profile string) string {
 		"task) or explain in chat. When you are not in a group and " +
 		"players are nearby, offer to group up in /say from time to time and invite anyone who responds or asks. " +
 		"You can invite by name anyone you have seen in chat, even far away; invites are not range limited. " +
+		"The snapshot lists quests you can take nearby in available_quests; to grow your quest log pick one and call " +
+		"accept_quest, then work_on_quest on it. " +
 		"Reply to any message in the same chat channel it was said in, whether the sender is a player or another bot. " +
 		"Direct requests from real players outrank your current task: acknowledge and act on them. " +
 		"If a player asks to join your group and it is full (5/5), say so in that channel and " +
@@ -276,6 +278,9 @@ var agentTools = []map[string]any{
 		"destination": map[string]any{"type": "string"},
 	}, []string{"destination"}),
 	functionTool("work_on_quest", "Run an external quest-objective loop for one active solo quest.", map[string]any{
+		"quest_id": map[string]any{"type": "integer"},
+	}, []string{"quest_id"}),
+	functionTool("accept_quest", "Travel to a nearby quest giver and accept one quest from available_quests.", map[string]any{
 		"quest_id": map[string]any{"type": "integer"},
 	}, []string{"quest_id"}),
 	functionTool("kill_count", "Kill and loot a count of nearby creatures with the given entry.", map[string]any{

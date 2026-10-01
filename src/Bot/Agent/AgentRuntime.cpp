@@ -71,6 +71,8 @@ constexpr uint32 AGENT_MAX_SNAPSHOT_CREATURES = 12;
 constexpr uint32 AGENT_MAX_SNAPSHOT_GAMEOBJECTS = 12;
 constexpr uint32 AGENT_MAX_SNAPSHOT_PLAYERS = 12;
 constexpr uint32 AGENT_MAX_SNAPSHOT_ITEMS = 40;
+constexpr uint32 AGENT_MAX_SNAPSHOT_AVAILABLE_QUESTS = 12;
+constexpr uint32 AGENT_MAX_AVAILABLE_QUESTS_PER_GIVER = 3;
 constexpr uint32 AGENT_EVENT_SHARD_COUNT = 256;
 constexpr uint32 AGENT_OPERATION_TICK_MS = 250;
 constexpr uint32 AGENT_OPERATION_EVENT = 1;
@@ -368,15 +370,47 @@ uint64 GetUInt64(boost::property_tree::ptree const& tree, std::string const& key
     return value.empty() ? 0 : std::stoull(value);
 }
 
-TravelDestination* FindQuestDestination(Player* bot, uint32 questId, uint32 objectiveIndex, bool turnIn)
+TravelDestination* FindQuestDestination(Player* bot, uint32 questId, uint32 objectiveIndex, bool turnIn, bool start)
 {
     QuestStatus const status = bot->GetQuestStatus(questId);
-    bool const completed = status == QUEST_STATUS_COMPLETE;
-    if (turnIn != completed)
-        return nullptr;
+    if (start)
+    {
+        if (status != QUEST_STATUS_NONE)
+            return nullptr;
+    }
+    else
+    {
+        bool const completed = status == QUEST_STATUS_COMPLETE;
+        if (turnIn != completed)
+            return nullptr;
+    }
 
+    if (start)
+    {
+        // Available quests have no entry in getQuestTravelDestinations' taker
+        // list; their start points live in the quest-giver relations.
+        auto const iterator = TravelMgr::instance().quests.find(questId);
+        if (iterator == TravelMgr::instance().quests.end() || !iterator->second)
+            return nullptr;
+        WorldPosition botPosition(bot);
+        TravelDestination* bestDestination = nullptr;
+        float bestDistance = std::numeric_limits<float>::max();
+        for (TravelDestination* destination : iterator->second->questGivers)
+        {
+            if (!destination || !destination->isActive(bot))
+                continue;
+            if (destination->distanceTo(&botPosition) < bestDistance)
+            {
+                bestDistance = destination->distanceTo(&botPosition);
+                bestDestination = destination;
+            }
+        }
+        return bestDestination;
+    }
+
+    bool const ignoreObjectives = turnIn;
     std::vector<TravelDestination*> destinations =
-        TravelMgr::instance().getQuestTravelDestinations(bot, questId, true, true, 0.0f, false);
+        TravelMgr::instance().getQuestTravelDestinations(bot, questId, true, true, 0.0f, ignoreObjectives);
     WorldPosition position(bot);
     TravelDestination* bestDestination = nullptr;
     float bestDistance = std::numeric_limits<float>::max();
@@ -899,6 +933,39 @@ struct AgentRuntime::Impl
             if (++npcCount >= AGENT_MAX_SNAPSHOT_PLAYERS)
                 break;
         }
+        result << "],\"available_quests\":[";
+        uint32 publishedQuests = 0;
+        bool firstAvailable = true;
+        for (ObjectGuid const guid : npcGuids)
+        {
+            if (publishedQuests >= AGENT_MAX_SNAPSHOT_AVAILABLE_QUESTS)
+                break;
+            Creature* creature = botAI->GetCreature(guid);
+            if (!creature || !creature->IsAlive() || !creature->HasNpcFlag(UNIT_NPC_FLAG_QUESTGIVER))
+                continue;
+            bot->PrepareQuestMenu(guid);
+            QuestMenu& questMenu = bot->PlayerTalkClass->GetQuestMenu();
+            uint32 fromThisGiver = 0;
+            for (uint32 i = 0; i < questMenu.GetMenuItemCount(); ++i)
+            {
+                if (fromThisGiver >= AGENT_MAX_AVAILABLE_QUESTS_PER_GIVER ||
+                    publishedQuests >= AGENT_MAX_SNAPSHOT_AVAILABLE_QUESTS)
+                    break;
+                uint32 const menuQuestId = questMenu.GetItem(i).QuestId;
+                Quest const* menuQuest = sObjectMgr->GetQuestTemplate(menuQuestId);
+                if (!menuQuest || bot->GetQuestStatus(menuQuestId) != QUEST_STATUS_NONE ||
+                    !bot->CanTakeQuest(menuQuest, false))
+                    continue;
+                if (!firstAvailable)
+                    result << ",";
+                firstAvailable = false;
+                result << "{\"quest_id\":" << menuQuestId << ",\"title\":\"" << EscapeJson(menuQuest->GetTitle())
+                       << "\",\"giver_name\":\"" << EscapeJson(creature->GetName()) << "\",\"giver_guid\":\""
+                       << EscapeJson(std::to_string(guid.GetRawValue())) << "\"}";
+                ++publishedQuests;
+                ++fromThisGiver;
+            }
+        }
         result << "]}";
         return result.str();
     }
@@ -967,7 +1034,7 @@ struct AgentRuntime::Impl
         bool const assist = operation == "assist_leader";
         bool const travelOperation = operation == "navigate_to_destination" ||
                                      operation == "navigate_to_quest_objective" ||
-                                     operation == "navigate_to_quest_turnin";
+                                     operation == "navigate_to_quest_turnin" || operation == "navigate_to_quest_giver";
         if (!bot->IsAlive() || (!travelOperation && bot->GetMapId() != loop.mapId))
         {
             FinishOperation(botAI, false, "bot died or left the operation map");
@@ -1207,6 +1274,22 @@ struct AgentRuntime::Impl
             WorldPacket packet(CMSG_QUESTGIVER_COMPLETE_QUEST);
             packet << loop.target;
             loop.attempted = botAI->DoSpecificAction("talk to quest giver", Event("talk to quest giver", packet), true);
+        }
+        if (operation == "accept_quest")
+        {
+            if (bot->GetQuestStatus(loop.questId) != QUEST_STATUS_NONE)
+            {
+                FinishOperation(botAI, true, "quest accepted");
+                return;
+            }
+            if (getMSTimeDiff(loop.lastInteractionMs, now) < 1000)
+                return;
+            loop.lastInteractionMs = now;
+            // Same session path QuestAction::AcceptQuest uses on the bot AI thread.
+            WorldPacket packet(CMSG_QUESTGIVER_ACCEPT_QUEST);
+            packet << loop.target << loop.questId << uint32(0);
+            packet.rpos(0);
+            bot->GetSession()->HandleQuestgiverAcceptQuestOpcode(packet);
         }
     }
 
@@ -1468,12 +1551,15 @@ struct AgentRuntime::Impl
                                   "destination unavailable");
                 return;
             }
-            if (command.operation == "navigate_to_quest_objective" || command.operation == "navigate_to_quest_turnin")
+            if (command.operation == "navigate_to_quest_objective" || command.operation == "navigate_to_quest_turnin" ||
+                command.operation == "navigate_to_quest_giver")
             {
                 uint32 const questId = GetUInt(arguments, "quest_id");
                 uint32 const objectiveIndex = GetUInt(arguments, "objective_index");
-                TravelDestination* destination = FindQuestDestination(botAI->GetBot(), questId, objectiveIndex,
-                                                                      command.operation == "navigate_to_quest_turnin");
+                bool const turnIn = command.operation == "navigate_to_quest_turnin";
+                bool const start = command.operation == "navigate_to_quest_giver";
+                TravelDestination* destination =
+                    FindQuestDestination(botAI->GetBot(), questId, objectiveIndex, turnIn, start);
                 WorldPosition position(botAI->GetBot());
                 std::vector<WorldPosition*> points =
                     destination ? destination->nextPoint(&position, true) : std::vector<WorldPosition*>();
@@ -1483,6 +1569,34 @@ struct AgentRuntime::Impl
                 else
                     PublishResult(command.requestId, command.operationId, command.operation, "rejected",
                                   "quest destination unavailable");
+                return;
+            }
+            if (command.operation == "accept_quest")
+            {
+                uint32 const questId = GetUInt(arguments, "quest_id");
+                Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+                Player* bot = botAI->GetBot();
+                ObjectGuid giverGuid;
+                if (quest && bot->GetQuestStatus(questId) == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) &&
+                    bot->SatisfyQuestLog(false) && bot->CanAddQuest(quest, false))
+                {
+                    GuidVector const nearby = botAI->GetAiObjectContext()->GetValue<GuidVector>("nearest npcs")->Get();
+                    for (ObjectGuid const guid : nearby)
+                    {
+                        Creature* giver = botAI->GetCreature(guid);
+                        if (giver && giver->IsAlive() && giver->HasNpcFlag(UNIT_NPC_FLAG_QUESTGIVER) &&
+                            giver->hasQuest(questId))
+                        {
+                            giverGuid = guid;
+                            break;
+                        }
+                    }
+                }
+                if (giverGuid)
+                    StartOperation(botAI, command, giverGuid, 2.0f, questId);
+                else
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "quest not available to take");
                 return;
             }
             if (command.operation == "navigate_to_player" || command.operation == "follow_player")

@@ -221,8 +221,16 @@ type playerInfo struct {
 	Level    uint32    `json:"level"`
 	Distance float64   `json:"distance"`
 	IsBot    bool      `json:"is_bot"`
+	InGroup  bool      `json:"in_group"`
 	MapID    uint32    `json:"map_id"`
 	Position []float64 `json:"position"`
+}
+
+type availableQuest struct {
+	QuestID   uint32 `json:"quest_id"`
+	Title     string `json:"title"`
+	GiverName string `json:"giver_name"`
+	GiverGUID string `json:"giver_guid"`
 }
 
 type snapshot struct {
@@ -272,8 +280,9 @@ type snapshot struct {
 			Name   string `json:"name"`
 		} `json:"items"`
 	} `json:"inventory"`
-	Trade           json.RawMessage `json:"trade,omitempty"`
-	Quests          []questInfo     `json:"quests"`
+	Trade           json.RawMessage  `json:"trade,omitempty"`
+	Quests          []questInfo      `json:"quests"`
+	AvailableQuests []availableQuest `json:"available_quests,omitempty"`
 	NearbyCreatures []struct {
 		GUID      string    `json:"guid"`
 		Entry     uint32    `json:"entry"`
@@ -1137,6 +1146,8 @@ func (a *actor) applyTool(call toolCall) {
 		a.startDestinationTask(args)
 	case "work_on_quest":
 		a.startQuestTask(args)
+	case "accept_quest":
+		a.startAcceptQuestTask(args)
 	case "kill_count":
 		a.startKillTask(args)
 	case "gather_resources":
@@ -1273,6 +1284,72 @@ func (a *actor) startQuestTask(args map[string]json.RawMessage) {
 	a.advanceTask()
 }
 
+func (a *actor) startAcceptQuestTask(args map[string]json.RawMessage) {
+	var questID uint32
+	_ = json.Unmarshal(args["quest_id"], &questID)
+	if questID == 0 {
+		a.rejectTool("accept_quest", "quest_id is required")
+		return
+	}
+	for index := range a.latest.Quests {
+		if a.latest.Quests[index].QuestID == questID {
+			a.rejectTool("accept_quest", "quest is already in your quest log")
+			return
+		}
+	}
+	known := false
+	for index := range a.latest.AvailableQuests {
+		if a.latest.AvailableQuests[index].QuestID == questID {
+			known = true
+			break
+		}
+	}
+	if !known {
+		a.rejectTool("accept_quest", "quest is not offered nearby; pick one from available_quests or request a fresh snapshot")
+		return
+	}
+	if a.state.Task != nil && a.state.Task.Kind == "accept_quest" && a.state.Task.QuestID == questID {
+		return
+	}
+	a.cancelTaskPrimitive()
+	a.state.Task = &task{ID: newID(), Kind: "accept_quest", QuestID: questID, Phase: "travel",
+		LastProgressUTC: time.Now().UTC()}
+	a.persist()
+	a.advanceTask()
+}
+
+func (a *actor) advanceAcceptQuestTask(current *task) {
+	for index := range a.latest.Quests {
+		if a.latest.Quests[index].QuestID == current.QuestID {
+			a.finishTask("completed", "quest is in the quest log")
+			return
+		}
+	}
+	if current.Phase == "accept" {
+		// The accept primitive failed without a terminal event; try navigation again.
+		current.Phase = "travel"
+	}
+	travel := a.latest.TravelTarget
+	if travel != nil && travel.IsWorking {
+		current.Phase = "accept"
+		current.OperationID = a.sendPrimitive("accept_quest", map[string]any{"quest_id": current.QuestID})
+		current.LastProgressUTC = time.Now().UTC()
+		a.persist()
+		return
+	}
+	if travel != nil && travel.IsTraveling {
+		return
+	}
+	if current.Retries >= 3 {
+		a.finishTask("blocked", "quest giver unreachable repeatedly")
+		return
+	}
+	current.Retries++
+	current.OperationID = a.sendPrimitive("navigate_to_quest_giver", map[string]any{"quest_id": current.QuestID})
+	current.LastProgressUTC = time.Now().UTC()
+	a.persist()
+}
+
 func (a *actor) rejectTool(name, reason string) {
 	payload := mustJSON(map[string]string{"tool": name, "reason": reason})
 	a.recent = append(a.recent, recentEvent{Type: "tool_rejected", Payload: payload, New: true})
@@ -1329,6 +1406,8 @@ func (a *actor) advanceTask() {
 		a.advanceGatherTask(current)
 	case "quest":
 		a.advanceQuestTask(current)
+	case "accept_quest":
+		a.advanceAcceptQuestTask(current)
 	case "navigate_player", "navigate_to_player", "follow_player":
 		a.advancePlayerNavigationTask(current)
 	case "navigate_destination":
@@ -2109,10 +2188,20 @@ func (a *actor) handleTaskOperation(incoming event) {
 			a.finishTask("completed", "arrived at destination")
 			return
 		}
+		if current.Kind == "accept_quest" {
+			current.Phase = "accept"
+			current.OperationID = a.sendPrimitive("accept_quest", map[string]any{"quest_id": current.QuestID})
+			current.LastProgressUTC = time.Now().UTC()
+			a.persist()
+			return
+		}
 		current.Phase = "select"
 		current.LastProgressUTC = time.Now().UTC()
 		a.persist()
 		a.requestSnapshot()
+		return
+	case "accept":
+		a.finishTask("completed", "quest accepted")
 		return
 	case "turnin_travel":
 		current.Phase = "turnin_giver"
