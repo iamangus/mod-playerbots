@@ -148,6 +148,9 @@ func systemPrompt(profile string) string {
 		"the corresponding task tools, and do not claim an action succeeded without observed results. " +
 		"When a player asks you to lead, choose a concrete destination or quest/combat task; following the player is not leading. " +
 		"Grouped bots assist their leader automatically; pick a different task only when the player explicitly asks. " +
+		"Direct requests from real players outrank your current task: acknowledge and act on them. Reply in the same chat " +
+		"channel the request used. If a player asks to join your group and it is full (5/5), say so in that channel and " +
+		"point them to a bot outside the group; if you can invite, invite immediately instead of just agreeing in chat. " +
 		"A pending trade is not necessarily an open window: check trade.window_open, and open it before asking the player to offer items. " +
 		"Reply in the incoming message's language; SAY/YELL use the bot's faction language. Use remember only " +
 		"for durable useful facts, and keep identity stable. Profile: " + profile
