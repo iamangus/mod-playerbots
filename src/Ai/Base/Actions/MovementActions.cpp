@@ -2764,14 +2764,23 @@ bool MoveOutOfCollisionAction::isUseful()
 bool MoveRandomAction::MoveRandomPoint(float distance, bool explicitCommand)
 {
     Map* map = bot->GetMap();
-    for (int i = 0; i < 3; ++i)
+    // Explicit searches cover the full circle and retry at shorter radii near
+    // walls. Keep the legacy per-tick action's original three-attempt cost.
+    constexpr uint32 SEARCH_DIRECTIONS = 8;
+    constexpr uint32 SEARCH_RADII = 3;
+    float const initialAngle = explicitCommand ? frand(0.0f, 2.0f * static_cast<float>(M_PI)) : 0.0f;
+    uint32 const attempts = explicitCommand ? SEARCH_DIRECTIONS * SEARCH_RADII : 3;
+    for (uint32 i = 0; i < attempts; ++i)
     {
         float x = bot->GetPositionX();
         float y = bot->GetPositionY();
         float z = bot->GetPositionZ();
-        float angle = (float)rand_norm() * static_cast<float>(M_PI);
-        x += urand(0, distance) * cos(angle);
-        y += urand(0, distance) * sin(angle);
+        float const angle = explicitCommand ? initialAngle + (i % SEARCH_DIRECTIONS) * 2.0f * static_cast<float>(M_PI) /
+                                                                 SEARCH_DIRECTIONS
+                                            : (float)rand_norm() * static_cast<float>(M_PI);
+        float const radius = explicitCommand ? distance / (1u << (i / SEARCH_DIRECTIONS)) : 0.0f;
+        x += (explicitCommand ? radius : urand(0, distance)) * cos(angle);
+        y += (explicitCommand ? radius : urand(0, distance)) * sin(angle);
 
         if (!bot->GetMap()->CheckCollisionAndGetValidCoords(bot, bot->GetPositionX(), bot->GetPositionY(),
                                                             bot->GetPositionZ(), x, y, z))
@@ -2781,6 +2790,11 @@ bool MoveRandomAction::MoveRandomPoint(float distance, bool explicitCommand)
 
         if (explicitCommand)
         {
+            if (bot->GetExactDist(x, y, z) < 1.0f)
+                continue;
+            PathGenerator path(bot);
+            if (!path.CalculatePath(x, y, z) || (path.GetPathType() & PATHFIND_NOPATH))
+                continue;
             // The controller issues search moves seconds apart on purpose. The
             // legacy wait/duplicate windows exist to stop per-tick engine
             // actions from spamming movement; they must not reject explicit

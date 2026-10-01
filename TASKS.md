@@ -17,6 +17,9 @@ Use stable IDs such as TASK-001 and statuses: queued, in progress, blocked, done
 **Further follow-ups:** "go and dont stop till its done"; "Please continue" —
 continue the same ordered scope, preserving existing state and deferred content.
 
+**Latest follow-up:** "Can you fix them?" — fix remaining item-objective,
+quest-destination, death/recovery, and local-search failures from live validation.
+
 **Order/scope:** (1) finish acquisition: trading discovery/negotiation and multi-material
 trades, multi-page/multi-material auction search, bidding/outbid/refunds, and nonlocal
 gathering; (3) player-linked social progression and opt-in road-preferred routing;
@@ -430,9 +433,37 @@ four dead/off-map destination tasks, one unavailable named destination, and one
 local-search path failure. This is partial progression, not universal recovery
 or completed level-80/acquisition/social validation.
 
-**Next:** Trace the unavailable quest/objective destinations and unsupported
-item-source quests; continue TASK-011 group/social validation and observe longer
-cohort progression without claiming universal success.
+**Remaining-failure fixes (in progress):** Native capture identifies quest 364
+(The Mindless Ones) rejected by objective `isActive`, which still consults legacy
+`can fight equal` and suppresses depleted nearby spawns. Agent destination lookup
+now matches the requested objective/source explicitly, retains ordinary level and
+normal-mob limits (elite/dungeon content stays deferred), and picks a same-map
+spawn point without those legacy readiness gates. Named destination failure was
+the invented string "The Boar Hunter quest giver"; model instructions now direct
+active/completed quests to `work_on_quest`, not fabricated semantic destinations.
+Item snapshots previously omitted both item-slot indices and source entries.
+Added a world-initialized read-only loot-source index, bounded snapshot sources,
+distinct item objective identity, source-aware kill/loot or gameobject loot
+children, and item-specific navigation. A separate persisted search budget bounds
+repeated arrivals without objective progress. DB confirms direct ordinary loot
+sources for quests 179/789/747 (wolves, scorpids, plainstriders).
+
+There was no death-recovery tool; spirit-healer navigation was just a dead-bot
+navigation task. Added explicit `recover_death` using ordinary release/reclaim
+handlers and native ghost navigation, enforcing the reclaim delay and observing
+life before completion. No free repairs, instant revive, legacy fallback, or
+cross-map recovery. Dead/off-map operations now terminate immediately rather
+than reselecting combat targets. Local explicit searches sample eight directions
+at three bounded radii, validate a native path, and require actual displacement
+before reporting completion; legacy per-tick searches keep three attempts.
+Seven regression functions cover sources/slots/search bounds and death recovery.
+Full race tests (three runs), vet, codestyle, formatting, whitespace and reused
+creator lookups pass. Core/controller images building/publishing under
+`local-quest-source-recovery`; deployment/live outcomes remain pending.
+
+**Next:** Complete builds, deploy compatible core/controller images, run the
+mandatory clean reset, and verify item acquisition/objective navigation/corpse
+recovery live; then continue TASK-011 group/social and cohort validation.
 
 ### TASK-012 — Remove legacy autonomous AI tree (queued)
 

@@ -144,8 +144,9 @@ func systemPrompt(profile string) string {
 		"state. Events with new=false are context only and must not be acted on again. Do not repeat an operation already " +
 		"in progress. Prefer concrete quest or combat progress over repeated acknowledgements. Do not reply to every bot " +
 		"party message or wait indefinitely for another bot to lead. If navigation fails, choose a reachable nearby " +
-		"objective rather than repeating the same failed destination. Chat does not move you or accept quests: use " +
+		"objective rather than repeating the same failed destination. For an active or completed quest, use work_on_quest; never invent a destination name such as '<quest title> quest giver'. The quest tool resolves objectives and the actual turn-in receiver. Chat does not move you or accept quests: use " +
 		"the corresponding task tools, and do not claim an action succeeded without observed results. " +
+		"When alive=false, use recover_death to release spirit, walk back and reclaim your corpse. Ordinary navigation to a spirit healer does not resurrect you. Do not start combat or quest work while dead, and do not replace an active recovery with chat or navigation. " +
 		"When a player asks you to lead, choose a concrete destination or quest/combat task; following the player is not leading. " +
 		"When social_progression is present, use its authoritative friend presence, level band and region preferences. Keep independent goals in the friend's general zone; this is not a follow order. Favor low-XP work while ahead or after confirmed friends-offline grace, normal level-appropriate progression while behind, and never interrupt active group obligations for pacing. Unknown or stale presence is not logout. A friendship comes from an explicit human friend-list relationship, never a casual whisper or proximity. " +
 		"Grouped non-leader bots assist their leader automatically; if you are the group leader, choose the group's actual " +
@@ -347,6 +348,7 @@ var agentTools = []map[string]any{
 	functionTool("work_on_quest", "Run an external quest-objective loop for one active solo quest.", map[string]any{
 		"quest_id": map[string]any{"type": "integer"},
 	}, []string{"quest_id"}),
+	functionTool("recover_death", "Recover from an observed death through ordinary spirit release, same-map corpse navigation and reclaim. Waits for the normal reclaim delay and verifies resurrection. No free repair, instant revive, teleport to the corpse, or spirit-healer shortcut. Replaces the current task; cross-map, arena and battleground recovery are not supported.", map[string]any{}, nil),
 	functionTool("accept_quest", "Travel to a nearby quest giver and accept one quest from available_quests.", map[string]any{
 		"quest_id": map[string]any{"type": "integer"},
 	}, []string{"quest_id"}),

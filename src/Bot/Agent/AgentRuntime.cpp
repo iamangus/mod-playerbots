@@ -19,6 +19,7 @@ using boost::placeholders::_1;
 #include "AgentTradeOperation.h"
 #include "AiObjectContext.h"
 #include "ChooseTravelTargetAction.h"
+#include "Corpse.h"
 #include "Creature.h"
 #include "DBCStores.h"
 #include "Duration.h"
@@ -26,6 +27,7 @@ using boost::placeholders::_1;
 #include "EventMap.h"
 #include "FishingAction.h"
 #include "GameObject.h"
+#include "GameTime.h"
 #include "Group.h"
 #include "Item.h"
 #include "ItemPackets.h"
@@ -89,6 +91,8 @@ constexpr uint32 AGENT_MAX_SNAPSHOT_PLAYERS = 12;
 constexpr uint32 AGENT_MAX_SNAPSHOT_ITEMS = 40;
 constexpr uint32 AGENT_MAX_SNAPSHOT_AVAILABLE_QUESTS = 12;
 constexpr uint32 AGENT_MAX_AVAILABLE_QUESTS_PER_GIVER = 3;
+constexpr uint32 AGENT_MAX_QUEST_ITEM_SOURCES = 32;
+constexpr uint32 AGENT_RECOVERY_TIMEOUT_MS = 15 * MINUTE * IN_MILLISECONDS;
 constexpr uint32 AGENT_MAX_VENDOR_OFFERS_PER_NPC = 12;
 constexpr uint32 AGENT_MAX_CRAFTING_RECIPES = 40;
 constexpr uint32 AGENT_MAX_OBSERVED_DROP_ITEMS = 12;
@@ -398,7 +402,8 @@ uint64 GetUInt64(boost::property_tree::ptree const& tree, std::string const& key
     return value.empty() ? 0 : std::stoull(value);
 }
 
-TravelDestination* FindQuestDestination(Player* bot, uint32 questId, uint32 objectiveIndex, bool turnIn, bool start)
+TravelDestination* FindQuestDestination(Player* bot, uint32 questId, uint32 objectiveIndex, uint32 itemId, bool turnIn,
+                                        bool start)
 {
     QuestStatus const status = bot->GetQuestStatus(questId);
     if (start)
@@ -408,6 +413,8 @@ TravelDestination* FindQuestDestination(Player* bot, uint32 questId, uint32 obje
     }
     else
     {
+        if (status != QUEST_STATUS_INCOMPLETE && status != QUEST_STATUS_COMPLETE)
+            return nullptr;
         bool const completed = status == QUEST_STATUS_COMPLETE;
         if (turnIn != completed)
             return nullptr;
@@ -442,13 +449,12 @@ TravelDestination* FindQuestDestination(Player* bot, uint32 questId, uint32 obje
             // bots do not maintain. Check the same map and quest-level rules
             // directly instead; level and availability are validated again by
             // the accept primitive before any quest is taken.
-            if (destination->getPoints().empty())
-                continue;
-            if (destination->getPoints().front()->GetMapId() != botPosition.GetMapId())
-                continue;
             if ((int32)quest->GetQuestLevel() >= (int32)bot->GetLevel() + (int32)5)
                 continue;
-            float const distance = destination->distanceTo(&botPosition);
+            float distance = std::numeric_limits<float>::max();
+            for (WorldPosition* point : destination->getPoints(true))
+                if (point && point->GetMapId() == bot->GetMapId())
+                    distance = std::min(distance, point->distance(&botPosition));
             if (distance < bestDistance)
             {
                 bestDistance = distance;
@@ -459,6 +465,24 @@ TravelDestination* FindQuestDestination(Player* bot, uint32 questId, uint32 obje
     }
 
     bool const ignoreObjectives = turnIn;
+    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+    if (!quest)
+        return nullptr;
+    std::vector<int32> itemSources;
+    if (!turnIn)
+    {
+        if (itemId)
+        {
+            if (objectiveIndex >= QUEST_ITEM_OBJECTIVES_COUNT || quest->RequiredItemId[objectiveIndex] != itemId)
+                return nullptr;
+            auto const source = TravelMgr::instance().questItemSources.find(itemId);
+            if (source == TravelMgr::instance().questItemSources.end())
+                return nullptr;
+            itemSources = source->second;
+        }
+        else if (objectiveIndex >= QUEST_OBJECTIVES_COUNT || !quest->RequiredNpcOrGo[objectiveIndex])
+            return nullptr;
+    }
     std::vector<TravelDestination*> destinations =
         TravelMgr::instance().getQuestTravelDestinations(bot, questId, true, true, 0.0f, ignoreObjectives);
     WorldPosition position(bot);
@@ -477,12 +501,36 @@ TravelDestination* FindQuestDestination(Player* bot, uint32 questId, uint32 obje
         else
         {
             QuestObjectiveTravelDestination* objective = dynamic_cast<QuestObjectiveTravelDestination*>(destination);
-            if (!objective || objective->GetObjectiveIndex() != objectiveIndex || !objective->isActive(bot))
+            if (!objective)
                 continue;
+            int32 const entry = objective->getEntry();
+            if (itemId ? std::find(itemSources.begin(), itemSources.end(), entry) == itemSources.end()
+                       : entry != quest->RequiredNpcOrGo[objectiveIndex])
+                continue;
+            // Agent tasks validate their own progress and do not maintain legacy
+            // combat-readiness/group values. Keep concrete difficulty limits,
+            // but allow travel to depleted spawn areas while mobs respawn.
+            if (quest->GetQuestLevel() > bot->GetLevel() + 1 || quest->GetType() == QUEST_TYPE_ELITE ||
+                quest->GetType() == QUEST_TYPE_DUNGEON)
+                continue;
+            if (entry > 0)
+            {
+                CreatureTemplate const* creature = sObjectMgr->GetCreatureTemplate(entry);
+                if (!creature || creature->rank != CREATURE_ELITE_NORMAL || creature->maxlevel > bot->GetLevel() + 4)
+                    continue;
+            }
         }
-        if (destination->distanceTo(&position) < bestDistance)
+        std::vector<WorldPosition*> const points = destination->getPoints(true);
+        float distance = std::numeric_limits<float>::max();
+        for (WorldPosition* point : points)
         {
-            bestDistance = destination->distanceTo(&position);
+            if (!point || point->GetMapId() != bot->GetMapId())
+                continue;
+            distance = std::min(distance, point->distance(&position));
+        }
+        if (distance < bestDistance)
+        {
+            bestDistance = distance;
             bestDestination = destination;
         }
     }
@@ -548,6 +596,7 @@ struct AgentRuntime::Impl
         bool movementStarted = false;
         bool paused = false;
         uint32 lastProgressMs = 0;
+        uint32 recoveryStartedMs = 0;
         uint32 lastReportMs = 0;
         uint32 lastInteractionMs = 0;
         uint32 lastMoveAttemptMs = 0;
@@ -1030,8 +1079,24 @@ struct AgentRuntime::Impl
                 if (!firstObjective)
                     result << ",";
                 firstObjective = false;
-                result << "{\"item_id\":" << quest->RequiredItemId[index] << ",\"count\":" << status.ItemCount[index]
-                       << ",\"required\":" << quest->RequiredItemCount[index] << "}";
+                result << "{\"index\":" << index << ",\"item_id\":" << quest->RequiredItemId[index]
+                       << ",\"count\":" << status.ItemCount[index]
+                       << ",\"required\":" << quest->RequiredItemCount[index] << ",\"sources\":[";
+                auto const source = TravelMgr::instance().questItemSources.find(quest->RequiredItemId[index]);
+                bool truncated = false;
+                if (source != TravelMgr::instance().questItemSources.end())
+                {
+                    std::vector<int32> const& sources = source->second;
+                    truncated = sources.size() > AGENT_MAX_QUEST_ITEM_SOURCES;
+                    for (size_t sourceIndex = 0;
+                         sourceIndex < std::min<size_t>(sources.size(), AGENT_MAX_QUEST_ITEM_SOURCES); ++sourceIndex)
+                    {
+                        if (sourceIndex)
+                            result << ",";
+                        result << sources[sourceIndex];
+                    }
+                }
+                result << "],\"sources_truncated\":" << (truncated ? "true" : "false") << "}";
             }
             result << "]}";
         }
@@ -1307,6 +1372,7 @@ struct AgentRuntime::Impl
         localOperation->corpseOnly = corpseOnly;
         localOperation->position.Relocate(botAI->GetBot());
         localOperation->lastProgressMs = getMSTime();
+        localOperation->recoveryStartedMs = localOperation->lastProgressMs;
         operationEvents.Reset();
         operationEvents.ScheduleEvent(AGENT_OPERATION_EVENT, Milliseconds(1));
         PublishResult(command.requestId, command.operationId, command.operation, "accepted", "local loop started",
@@ -1870,6 +1936,84 @@ struct AgentRuntime::Impl
         LocalOperation& loop = *localOperation;
         std::string const& operation = loop.command.operation;
         uint32 const now = getMSTime();
+        if (operation == "recover_death")
+        {
+            if (bot->IsAlive())
+            {
+                FinishOperation(botAI, true, "resurrection verified");
+                return;
+            }
+            if (bot->InBattleground() || bot->InArena() ||
+                getMSTimeDiff(loop.recoveryStartedMs, now) >= AGENT_RECOVERY_TIMEOUT_MS)
+            {
+                FinishOperation(botAI, false, "ordinary corpse recovery unavailable or timed out");
+                return;
+            }
+            if (bot->IsBeingTeleported())
+                return;
+            if (!bot->HasPlayerFlag(PLAYER_FLAGS_GHOST))
+            {
+                if (!loop.attempted)
+                {
+                    loop.attempted = true;
+                    WorldPacket packet(CMSG_REPOP_REQUEST);
+                    packet << uint8(0);
+                    bot->GetSession()->HandleRepopRequestOpcode(packet);
+                    loop.lastProgressMs = now;
+                }
+                else if (getMSTimeDiff(loop.lastProgressMs, now) >= AGENT_OPERATION_STALL_MS)
+                    FinishOperation(botAI, false, "spirit release was not verified");
+                return;
+            }
+            Corpse* corpse = bot->GetCorpse();
+            if (!corpse || corpse->GetMapId() != bot->GetMapId())
+            {
+                FinishOperation(botAI, false, "corpse is unavailable or requires cross-map recovery");
+                return;
+            }
+            if (loop.position.GetExactDist(bot) >= 1.0f)
+            {
+                loop.position.Relocate(bot);
+                loop.lastProgressMs = now;
+            }
+            if (corpse->IsWithinDist(bot, CORPSE_RECLAIM_RADIUS - 5.0f, true))
+            {
+                // The normal handler enforces reclaim delay, distance and phase.
+                // Wait for its cooldown; never resurrect or repair for free.
+                if (time_t(corpse->GetGhostTime() +
+                           bot->GetCorpseReclaimDelay(corpse->GetType() == CORPSE_RESURRECTABLE_PVP)) >
+                    time_t(GameTime::GetGameTime().count()))
+                    loop.lastProgressMs = now;
+                else if (!loop.lastMoveAttemptMs || getMSTimeDiff(loop.lastMoveAttemptMs, now) >= 1000)
+                {
+                    loop.lastMoveAttemptMs = now;
+                    WorldPacket packet(CMSG_RECLAIM_CORPSE);
+                    packet << bot->GetGUID();
+                    bot->GetSession()->HandleReclaimCorpseOpcode(packet);
+                }
+            }
+            else if (botAI->CanMove() && !bot->isMoving() &&
+                     (!loop.lastMoveAttemptMs || getMSTimeDiff(loop.lastMoveAttemptMs, now) >= 1000))
+            {
+                loop.lastMoveAttemptMs = now;
+                AgentMoveToTargetAction movement(botAI);
+                loop.movementStarted = movement.MoveToPosition(corpse->GetMapId(), corpse->GetPositionX(),
+                                                               corpse->GetPositionY(), corpse->GetPositionZ());
+            }
+            if (getMSTimeDiff(loop.lastProgressMs, now) >= AGENT_OPERATION_STALL_MS)
+            {
+                FinishOperation(botAI, false, "corpse recovery made no positional progress");
+                return;
+            }
+            if (getMSTimeDiff(loop.lastReportMs, now) >= AGENT_OPERATION_PROGRESS_MS)
+            {
+                loop.lastReportMs = now;
+                Publish("primitive_progress", "",
+                        "{\"operation_id\":\"" + EscapeJson(loop.command.operationId) +
+                            "\",\"snapshot\":" + BuildSnapshot(botAI) + "}");
+            }
+            return;
+        }
         bool const combat = operation == "engage_target";
         bool const follow = operation == "follow_player";
         bool const assist = operation == "assist_leader";
@@ -2007,7 +2151,10 @@ struct AgentRuntime::Impl
         if (operation == "move_random")
         {
             if (loop.movementStarted && !bot->isMoving())
-                FinishOperation(botAI, true, "search segment reached");
+            {
+                bool const moved = loop.navigationPosition.GetExactDist(bot) >= 1.0f;
+                FinishOperation(botAI, moved, moved ? "search segment reached" : "search segment made no movement");
+            }
             return;
         }
         if (operation == "navigate_to_position")
@@ -2407,6 +2554,11 @@ struct AgentRuntime::Impl
                               "trade operation queued; verify live trade state");
                 return;
             }
+            if (command.operation == "recover_death")
+            {
+                StartOperation(botAI, command);
+                return;
+            }
             if (command.operation == "move_random")
             {
                 if (botAI->GetBot()->IsInCombat() || !botAI->CanMove())
@@ -2422,6 +2574,7 @@ struct AgentRuntime::Impl
                 if (moved)
                 {
                     StartOperation(botAI, command);
+                    localOperation->navigationPosition.Relocate(botAI->GetBot());
                     localOperation->movementStarted = true;
                 }
                 else
@@ -2712,12 +2865,24 @@ struct AgentRuntime::Impl
                 uint32 const objectiveIndex = GetUInt(arguments, "objective_index");
                 bool const turnIn = command.operation == "navigate_to_quest_turnin";
                 bool const start = command.operation == "navigate_to_quest_giver";
-                TravelDestination* destination =
-                    FindQuestDestination(botAI->GetBot(), questId, objectiveIndex, turnIn, start);
+                TravelDestination* destination = FindQuestDestination(botAI->GetBot(), questId, objectiveIndex,
+                                                                      GetUInt(arguments, "item_id"), turnIn, start);
                 WorldPosition position(botAI->GetBot());
-                std::vector<WorldPosition*> points =
-                    destination ? destination->nextPoint(&position, true) : std::vector<WorldPosition*>();
-                bool const started = !points.empty() && SetTravelTarget(botAI, destination, points.front());
+                WorldPosition* nearest = nullptr;
+                float distance = std::numeric_limits<float>::max();
+                if (destination)
+                    for (WorldPosition* point : destination->getPoints(true))
+                    {
+                        if (!point || point->GetMapId() != botAI->GetBot()->GetMapId())
+                            continue;
+                        float const candidateDistance = point->distance(&position);
+                        if (candidateDistance < distance)
+                        {
+                            distance = candidateDistance;
+                            nearest = point;
+                        }
+                    }
+                bool const started = nearest && SetTravelTarget(botAI, destination, nearest);
                 if (started)
                     StartOperation(botAI, command);
                 else

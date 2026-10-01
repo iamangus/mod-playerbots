@@ -6,6 +6,20 @@ scalable from the ToCloud9 worldservers. It consumes its assigned virtual NATS e
 shards and publishes commands to the current owning worldserver using the event's
 owner token.
 
+`work_on_quest` supports ordinary kill/credit objectives and quest-item loot from
+native-observed creature or gameobject sources. Item objectives retain their own
+slot and item identity; quest counts, not navigation or loot-command admission,
+prove progress. Repeated arrivals without objective progress have a bounded search
+budget. Native item-source projections are capped at 32 entries and disclose
+truncation; unsupported or missing sources fail clearly rather than being invented.
+
+`recover_death` is an explicit controller-selected task: release spirit, walk back
+to a same-map corpse, wait for the ordinary reclaim delay, and reclaim through the
+normal player handler. Completion requires native-observed resurrection. It grants
+no free repairs, instant revival, or teleport to the corpse. Cross-map, arena and
+battleground recovery remain unsupported. Ordinary navigation to a spirit healer
+does not substitute for recovery, and legacy autonomous death actions stay disabled.
+
 The controller requires:
 
 - `TC9_NATS_URL`, `AGENT_STATE_REDIS_URL`, and `AGENT_SHARD_COUNT`;

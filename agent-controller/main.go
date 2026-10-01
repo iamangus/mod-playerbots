@@ -220,11 +220,13 @@ type command struct {
 }
 
 type questObjective struct {
-	Index    uint32 `json:"index"`
-	Entry    int32  `json:"entry"`
-	ItemID   uint32 `json:"item_id"`
-	Count    uint32 `json:"count"`
-	Required uint32 `json:"required"`
+	Index            uint32  `json:"index"`
+	Entry            int32   `json:"entry"`
+	ItemID           uint32  `json:"item_id"`
+	Count            uint32  `json:"count"`
+	Required         uint32  `json:"required"`
+	Sources          []int32 `json:"sources,omitempty"`
+	SourcesTruncated bool    `json:"sources_truncated,omitempty"`
 }
 
 type questInfo struct {
@@ -392,6 +394,8 @@ type task struct {
 	TargetGUID                   string          `json:"target_guid,omitempty"`
 	LootTargets                  []string        `json:"loot_targets,omitempty"`
 	RejectedQuestGivers          []string        `json:"rejected_quest_givers,omitempty"`
+	ObjectiveItemID              uint32          `json:"objective_item_id,omitempty"`
+	QuestSearchAttempts          uint32          `json:"quest_search_attempts,omitempty"`
 	ServiceOperation             string          `json:"service_operation,omitempty"`
 	ServiceArguments             json.RawMessage `json:"service_arguments,omitempty"`
 	CraftSteps                   []craftingStep  `json:"craft_steps,omitempty"`
@@ -1423,6 +1427,8 @@ func (a *actor) applyTool(call toolCall) {
 		a.startKillTask(args)
 	case "loot_nearby":
 		a.startLootBatchTask(args)
+	case "recover_death":
+		a.startDeathRecoveryTask()
 	case "visit_vendor", "train_class_spells", "collect_mail", "send_mail", "discover_flight_path", "take_flight":
 		a.startNPCServiceTask(call.Name, args)
 	case "fish_count":
@@ -1690,7 +1696,7 @@ func (a *actor) advanceTask() {
 		timeout := 2 * time.Minute
 		if current.Phase == "combat" {
 			timeout = combatOperationTimeout
-		} else if current.Phase == "travel" || current.Phase == "turnin_travel" || current.Phase == "road_segment" {
+		} else if current.Phase == "travel" || current.Phase == "turnin_travel" || current.Phase == "road_segment" || current.Kind == "recover_death" {
 			timeout = travelOperationTimeout
 		} else if current.Kind == "npc_service" && current.ServiceOperation == "take_flight" {
 			timeout = travelOperationTimeout
@@ -1744,6 +1750,12 @@ func (a *actor) advanceTask() {
 		a.advanceQuestTask(current)
 	case "accept_quest":
 		a.advanceAcceptQuestTask(current)
+	case "recover_death":
+		if a.latest.Bot.Alive != nil && *a.latest.Bot.Alive {
+			a.finishTask("completed", "resurrection observed")
+		} else {
+			a.finishTask("blocked", "corpse recovery lost its native operation; request fresh state before retrying")
+		}
 	case "navigate_player", "navigate_to_player", "follow_player":
 		a.advancePlayerNavigationTask(current)
 	case "navigate_destination":
@@ -2285,12 +2297,13 @@ func (a *actor) advanceQuestTask(current *task) {
 			return
 		} else {
 			current.Retries++
-			if current.Retries >= 3 {
+			if current.Retries >= 3 || current.QuestSearchAttempts >= 3 {
 				a.finishTask("blocked", "quest objective navigation failed repeatedly")
 				return
 			}
+			current.QuestSearchAttempts++
 			current.OperationID = a.sendPrimitive("navigate_to_quest_objective", map[string]any{
-				"quest_id": current.QuestID, "objective_index": current.ObjectiveIndex,
+				"quest_id": current.QuestID, "objective_index": current.ObjectiveIndex, "item_id": current.ObjectiveItemID,
 			})
 			current.LastProgressUTC = time.Now().UTC()
 			a.persist()
@@ -2379,36 +2392,52 @@ func (a *actor) advanceQuestTask(current *task) {
 		a.persist()
 		return
 	}
-	if objective.Index != current.ObjectiveIndex {
+	if objective.Index != current.ObjectiveIndex || objective.ItemID != current.ObjectiveItemID {
 		current.ObjectiveIndex = objective.Index
+		current.ObjectiveItemID = objective.ItemID
 		current.ObjectiveCount = objective.Count
 		current.Retries = 0
+		current.QuestSearchAttempts = 0
 	} else if objective.Count > current.ObjectiveCount {
 		current.ObjectiveCount = objective.Count
 		current.Retries = 0
+		current.QuestSearchAttempts = 0
 	}
 	if objective.Entry == 0 && objective.ItemID != 0 {
-		a.finishTask("blocked", "item objective source selection is not supported yet")
-		return
+		if len(objective.Sources) == 0 {
+			a.finishTask("blocked", "quest item has no supported loot source in the native observation")
+			return
+		}
 	}
 
 	entry := objective.Entry
-	if entry < 0 {
-		gameObjectEntry := uint32(-entry)
+	sourceMatches := func(entry int32) bool {
+		if objective.ItemID != 0 {
+			return slices.Contains(objective.Sources, entry)
+		}
+		return objective.Entry == entry
+	}
+	if entry < 0 || objective.ItemID != 0 {
 		for _, object := range a.latest.NearbyGameObjects {
-			if object.Entry == gameObjectEntry {
+			if sourceMatches(-int32(object.Entry)) {
 				current.TargetGUID = object.GUID
 				current.Phase = "interacting"
 				current.Retries = 0
-				current.OperationID = a.sendPrimitive("use_gameobject", map[string]any{"target_guid": object.GUID})
+				operation := "use_gameobject"
+				if objective.ItemID != 0 {
+					operation = "gather_target"
+					current.Phase = "gathering"
+				}
+				current.OperationID = a.sendPrimitive(operation, map[string]any{"target_guid": object.GUID})
 				current.LastProgressUTC = time.Now().UTC()
 				a.persist()
 				return
 			}
 		}
-	} else if entry != 0 {
+	}
+	if entry > 0 || objective.ItemID != 0 {
 		for _, creature := range a.latest.NearbyCreatures {
-			if creature.Entry == uint32(entry) {
+			if sourceMatches(int32(creature.Entry)) {
 				current.TargetGUID = creature.GUID
 				current.Phase = combatStartPhase(creature.Distance)
 				current.ObjectiveIndex = objective.Index
@@ -2428,15 +2457,16 @@ func (a *actor) advanceQuestTask(current *task) {
 		}
 	}
 
-	if current.Retries >= 3 {
+	if current.Retries >= 3 || current.QuestSearchAttempts >= 3 {
 		a.finishTask("blocked", "quest objective could not be reached or found")
 		return
 	}
 	current.Retries++
+	current.QuestSearchAttempts++
 	current.Phase = "travel"
 	current.ObjectiveIndex = objective.Index
 	current.OperationID = a.sendPrimitive("navigate_to_quest_objective", map[string]any{
-		"quest_id": current.QuestID, "objective_index": objective.Index,
+		"quest_id": current.QuestID, "objective_index": objective.Index, "item_id": objective.ItemID,
 	})
 	current.LastProgressUTC = time.Now().UTC()
 	a.persist()
@@ -2506,7 +2536,19 @@ func (a *actor) handleTaskOperation(incoming event) {
 		return
 	}
 	current.OperationID = ""
+	if current.Kind == "recover_death" {
+		if result.Status == "completed" {
+			a.finishTask("completed", "resurrection verified by native recovery")
+		} else {
+			a.finishTask("blocked", "corpse recovery failed: "+result.Reason)
+		}
+		return
+	}
 	if result.Status != "completed" {
+		if result.Reason == "bot died or left the operation map" {
+			a.finishTask("blocked", "native operation ended after death or map change; inspect state and recover before restarting")
+			return
+		}
 		if current.Kind == "navigate_destination" && result.Reason == "destination unavailable" {
 			a.markDestinationUnavailable(current.DestinationName, current.MapID, time.Now().UTC())
 			a.finishTask("blocked", "destination unavailable; choose a different destination")

@@ -7,15 +7,16 @@
 #ifndef PLAYERBOTS_TRAVELMGR_H
 #define PLAYERBOTS_TRAVELMGR_H
 
+#include <boost/functional/hash.hpp>
+#include <map>
+#include <memory>
+#include <random>
+
 #include "AiObject.h"
 #include "CreatureData.h"
 #include "GameObject.h"
 #include "GridDefines.h"
 #include "PlayerbotAIConfig.h"
-#include <boost/functional/hash.hpp>
-#include <map>
-#include <memory>
-#include <random>
 
 class Creature;
 class GuidPosition;
@@ -84,7 +85,7 @@ class WorldPosition : public WorldLocation
 {
 public:
     // Constructors
-    WorldPosition() : WorldLocation(){};
+    WorldPosition() : WorldLocation() {};
     WorldPosition(WorldLocation const& loc) : WorldLocation(loc) {}
     WorldPosition(WorldPosition const& pos) : WorldLocation(pos), visitors(pos.visitors) {}
     WorldPosition(std::string const str);
@@ -100,7 +101,7 @@ public:
     WorldPosition(uint32 mapid, CellCoord cell);
     WorldPosition(uint32 mapid, mGridCoord grid);
 
-    //Setters
+    // Setters
     void set(WorldLocation const& pos);
     void set(WorldObject const* wo);
     void set(WorldPosition const& pos);
@@ -167,23 +168,18 @@ public:
     // Returns the closest point from the list.
     WorldPosition* closest(std::vector<WorldPosition*> list)
     {
-        return *std::min_element(list.begin(), list.end(),
-                                 [this](WorldPosition* i, WorldPosition* j)
+        return *std::min_element(list.begin(), list.end(), [this](WorldPosition* i, WorldPosition* j)
                                  { return this->distance(i) < this->distance(j); });
     }
 
     WorldPosition closest(std::vector<WorldPosition> list)
     {
-        return *std::min_element(list.begin(), list.end(),
-                                 [this](WorldPosition i, WorldPosition j)
+        return *std::min_element(list.begin(), list.end(), [this](WorldPosition i, WorldPosition j)
                                  { return this->distance(i) < this->distance(j); });
     }
 
     // Quick square distance in 2d plane.
-    float sqDistance2d(WorldPosition center)
-    {
-        return GetExactDist2dSq(center.GetPositionX(), center.GetPositionY());
-    }
+    float sqDistance2d(WorldPosition center) { return GetExactDist2dSq(center.GetPositionX(), center.GetPositionY()); }
 
     // Quick square distance calculation without map check. Used for getting the minimum distant points.
     float sqDistance(WorldPosition center)
@@ -208,15 +204,13 @@ public:
     // Returns the closest point of the list. Fast but only works for the same map.
     WorldPosition* closestSq(std::vector<WorldPosition*> list)
     {
-        return *std::min_element(list.begin(), list.end(),
-                                 [this](WorldPosition* i, WorldPosition* j)
+        return *std::min_element(list.begin(), list.end(), [this](WorldPosition* i, WorldPosition* j)
                                  { return this->sqDistance(i) < this->sqDistance(j); });
     }
 
     WorldPosition closestSq(std::vector<WorldPosition> list)
     {
-        return *std::min_element(list.begin(), list.end(),
-                                 [this](WorldPosition i, WorldPosition j)
+        return *std::min_element(list.begin(), list.end(), [this](WorldPosition i, WorldPosition j)
                                  { return this->sqDistance(i) < this->sqDistance(j); });
     }
 
@@ -409,7 +403,7 @@ private:
 class GuidPosition : public ObjectGuid, public WorldPosition
 {
 public:
-    GuidPosition() : ObjectGuid(), WorldPosition(), loadedFromDB(false) { }
+    GuidPosition() : ObjectGuid(), WorldPosition(), loadedFromDB(false) {}
     GuidPosition(WorldObject* wo);
     GuidPosition(CreatureData const& creData);
     GuidPosition(GameObjectData const& goData);
@@ -423,7 +417,7 @@ public:
     Player* GetPlayer();
 
     bool HasNpcFlag(NPCFlags flag);
-    bool IsCreatureOrGOAccessible(); // For loaded grids check if the creature/gameobject is in world + alive
+    bool IsCreatureOrGOAccessible();  // For loaded grids check if the creature/gameobject is in world + alive
 
     operator bool() const { return !IsEmpty(); }
     bool operator==(ObjectGuid const& guid) const { return GetRawValue() == guid.GetRawValue(); }
@@ -764,7 +758,7 @@ protected:
 class TravelTarget : AiObject
 {
 public:
-    TravelTarget(PlayerbotAI* botAI) : AiObject(botAI), m_status(TRAVEL_STATUS_NONE), startTime(getMSTime()){};
+    TravelTarget(PlayerbotAI* botAI) : AiObject(botAI), m_status(TRAVEL_STATUS_NONE), startTime(getMSTime()) {};
     TravelTarget(PlayerbotAI* botAI, TravelDestination* tDestination1, WorldPosition* wPosition1)
         : AiObject(botAI), m_status(TRAVEL_STATUS_NONE), startTime(getMSTime())
     {
@@ -868,10 +862,10 @@ public:
     struct FlightMasterInfo
     {
         WorldPosition pos;
-        uint32        zoneId;          // resolved once at cache load
-        uint32        taxiNodeId;      // DBC taxi node nearest to this flight master
-        uint32        templateEntry;   // creature template ID (for ObjectGuid construction)
-        uint32        dbGuid;          // DB spawn GUID (for ObjectGuid construction)
+        uint32 zoneId;         // resolved once at cache load
+        uint32 taxiNodeId;     // DBC taxi node nearest to this flight master
+        uint32 templateEntry;  // creature template ID (for ObjectGuid construction)
+        uint32 dbGuid;         // DB spawn GUID (for ObjectGuid construction)
     };
 
     static TravelMgr& instance()
@@ -970,6 +964,8 @@ public:
 
     std::unordered_map<uint32, ExploreTravelDestination*> exploreLocs;
     std::unordered_map<uint32, QuestContainer*> quests;
+    // Built on the world thread with quest travel data; read-only during bot updates.
+    std::unordered_map<uint32, std::vector<int32>> questItemSources;
 
     std::vector<std::tuple<uint32, uint8, uint8>> badVmap, badMmap;
 

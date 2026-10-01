@@ -1758,6 +1758,7 @@ void TravelMgr::Clear()
 
     questGivers.clear();
     quests.clear();
+    questItemSources.clear();
 }
 
 void TravelMgr::logQuestError(uint32 errorNr, Quest* quest, uint32 objective, uint32 unitId, uint32 itemId)
@@ -2027,6 +2028,18 @@ void TravelMgr::LoadQuestTravelTable()
         for (auto& q : questMap)
         {
             uint32 questId = q.first;
+
+            if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
+                for (uint32 index = 0; index < QUEST_ITEM_OBJECTIVES_COUNT; ++index)
+                {
+                    uint32 const itemId = quest->RequiredItemId[index];
+                    if (!itemId || questItemSources.find(itemId) != questItemSources.end())
+                        continue;
+                    std::vector<int32> sources = GAI_VALUE2(std::vector<int32>, "item drop list", itemId);
+                    std::sort(sources.begin(), sources.end());
+                    sources.erase(std::unique(sources.begin(), sources.end()), sources.end());
+                    questItemSources.emplace(itemId, std::move(sources));
+                }
 
             QuestContainer* container = new QuestContainer;
 
