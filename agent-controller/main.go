@@ -832,7 +832,7 @@ func (a *actor) handleEvent(incoming event) {
 	}
 	// Routine observations must not invalidate an in-flight decision. Active task
 	// monitoring requests snapshots faster than some model responses arrive.
-	if incoming.Type != "snapshot" && incoming.Type != "primitive_progress" && incoming.Type != "bot_heartbeat" {
+	if incoming.Type != "snapshot" && incoming.Type != "primitive_progress" && incoming.Type != "bot_heartbeat" && incoming.Type != "social_session_ready" {
 		a.revision++
 	}
 	if incoming.OwnerToken != a.state.OwnerToken ||
@@ -879,8 +879,10 @@ func (a *actor) handleEvent(incoming event) {
 	}
 	switch incoming.Type {
 	case "social_session_ready":
-		a.state.ClusterSocialSession = true
-		a.persist()
+		if !a.state.ClusterSocialSession {
+			a.state.ClusterSocialSession = true
+			a.persist()
+		}
 		return
 	case "snapshot", "primitive_progress", "bot_heartbeat":
 	default:

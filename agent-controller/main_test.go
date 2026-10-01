@@ -248,6 +248,16 @@ func TestTradeObservationAndTaskPause(t *testing.T) {
 	}
 }
 
+func TestSocialReadinessDoesNotInvalidateDecisions(t *testing.T) {
+	a := actor{revision: 7, decisionPending: true}
+	a.state.OwnerToken, a.state.OwnerEpoch = "owner", "100"
+	a.state.ClusterSocialSession = true
+	a.handleEvent(event{Type: "social_session_ready", OwnerToken: "owner", OwnerEpoch: "100", Payload: json.RawMessage(`{}`)})
+	if a.revision != 7 || !a.decisionPending || !a.state.ClusterSocialSession {
+		t.Fatal("readiness refresh invalidated a pending decision")
+	}
+}
+
 func TestParsePopulationSnapshotAggregatesCounts(t *testing.T) {
 	payload := json.RawMessage(`{"status":"completed","total":7,"counts":[
 		{"race":1,"class":1,"level_band":0,"count":4},
