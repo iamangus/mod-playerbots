@@ -2333,6 +2333,19 @@ func (a *actor) advanceQuestTask(current *task) {
 			a.finishTask("blocked", "quest giver did not complete the turn-in")
 			return
 		}
+		// A nearby questgiver NPC is not necessarily this quest's receiver; the
+		// native interaction validates hasInvolvedQuest and would only fail
+		// repeatedly against the wrong NPC. Travel to the actual receiver first,
+		// then interact with whatever receiver is nearby on arrival.
+		if current.Phase != "turnin_giver" {
+			current.Phase = "turnin_travel"
+			current.OperationID = a.sendPrimitive("navigate_to_quest_turnin", map[string]any{
+				"quest_id": current.QuestID,
+			})
+			current.LastProgressUTC = time.Now().UTC()
+			a.persist()
+			return
+		}
 		for _, npc := range a.latest.NearbyNPCs {
 			if !npc.QuestGiver || npc.GUID == "" {
 				continue
@@ -2346,24 +2359,17 @@ func (a *actor) advanceQuestTask(current *task) {
 			a.persist()
 			return
 		}
-		if current.Phase != "turnin_giver" {
-			current.Phase = "turnin_travel"
-			current.OperationID = a.sendPrimitive("navigate_to_quest_turnin", map[string]any{
-				"quest_id": current.QuestID,
-			})
-			current.LastProgressUTC = time.Now().UTC()
-			a.persist()
-		} else if current.Retries >= 3 {
+		current.Retries++
+		if current.Retries >= 3 {
 			a.finishTask("blocked", "no nearby quest giver after repeated turn-in attempts")
-		} else {
-			current.Retries++
-			current.Phase = "turnin_travel"
-			current.OperationID = a.sendPrimitive("navigate_to_quest_turnin", map[string]any{
-				"quest_id": current.QuestID,
-			})
-			current.LastProgressUTC = time.Now().UTC()
-			a.persist()
+			return
 		}
+		current.Phase = "turnin_travel"
+		current.OperationID = a.sendPrimitive("navigate_to_quest_turnin", map[string]any{
+			"quest_id": current.QuestID,
+		})
+		current.LastProgressUTC = time.Now().UTC()
+		a.persist()
 		return
 	}
 	if objective.Index != current.ObjectiveIndex {

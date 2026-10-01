@@ -5,6 +5,10 @@
  */
 
 #include "TravelMgr.h"
+
+#include <iomanip>
+#include <numeric>
+
 #include "AreaDefines.h"
 #include "CellImpl.h"
 #include "ChatHelper.h"
@@ -23,31 +27,28 @@
 #include "TravelNode.h"
 #include "VMapFactory.h"
 #include "VMapMgr2.h"
-#include <iomanip>
-#include <numeric>
 
 // Navigation data
 
 struct Capital
 {
-    uint32              zoneId;
-    TeamId              team;
-    char const*         name;
+    uint32 zoneId;
+    TeamId team;
+    char const* name;
     std::vector<uint16> bankers;
 };
 
 static const std::vector<Capital> capitals = {
-    { AREA_STORMWIND_CITY,  TEAM_ALLIANCE, "Stormwind",     {2455, 2456, 2457} },
-    { AREA_IRONFORGE,       TEAM_ALLIANCE, "Ironforge",     {2460, 2461, 5099} },
-    { AREA_DARNASSUS,       TEAM_ALLIANCE, "Darnassus",     {4155, 4208, 4209} },
-    { AREA_THE_EXODAR,      TEAM_ALLIANCE, "Exodar",        {17773, 18350, 16710} },
-    { AREA_ORGRIMMAR,       TEAM_HORDE,    "Orgrimmar",     {3320, 3309, 3318} },
-    { AREA_UNDERCITY,       TEAM_HORDE,    "Undercity",     {4549, 2459, 2458, 4550} },
-    { AREA_THUNDER_BLUFF,   TEAM_HORDE,    "Thunder Bluff", {2996, 8356, 8357} },
-    { AREA_SILVERMOON_CITY, TEAM_HORDE,    "Silvermoon",    {17631, 17632, 17633, 16615, 16616, 16617} },
-    { AREA_SHATTRATH_CITY,  TEAM_NEUTRAL,  "Shattrath",     {19246, 19338, 19034, 19318} },
-    { AREA_DALARAN,         TEAM_NEUTRAL,  "Dalaran",       {30604, 30605, 30607, 28675, 28676, 28677, 29530} }
-};
+    {AREA_STORMWIND_CITY, TEAM_ALLIANCE, "Stormwind", {2455, 2456, 2457}},
+    {AREA_IRONFORGE, TEAM_ALLIANCE, "Ironforge", {2460, 2461, 5099}},
+    {AREA_DARNASSUS, TEAM_ALLIANCE, "Darnassus", {4155, 4208, 4209}},
+    {AREA_THE_EXODAR, TEAM_ALLIANCE, "Exodar", {17773, 18350, 16710}},
+    {AREA_ORGRIMMAR, TEAM_HORDE, "Orgrimmar", {3320, 3309, 3318}},
+    {AREA_UNDERCITY, TEAM_HORDE, "Undercity", {4549, 2459, 2458, 4550}},
+    {AREA_THUNDER_BLUFF, TEAM_HORDE, "Thunder Bluff", {2996, 8356, 8357}},
+    {AREA_SILVERMOON_CITY, TEAM_HORDE, "Silvermoon", {17631, 17632, 17633, 16615, 16616, 16617}},
+    {AREA_SHATTRATH_CITY, TEAM_NEUTRAL, "Shattrath", {19246, 19338, 19034, 19318}},
+    {AREA_DALARAN, TEAM_NEUTRAL, "Dalaran", {30604, 30605, 30607, 28675, 28676, 28677, 29530}}};
 
 static Capital const* FindCapitalByZone(uint32 zoneId)
 {
@@ -70,16 +71,26 @@ static int GetCityWeight(uint32 zoneId)
 {
     switch (zoneId)
     {
-        case AREA_STORMWIND_CITY:  return sPlayerbotAIConfig.weightTeleToStormwind;
-        case AREA_IRONFORGE:       return sPlayerbotAIConfig.weightTeleToIronforge;
-        case AREA_DARNASSUS:       return sPlayerbotAIConfig.weightTeleToDarnassus;
-        case AREA_THE_EXODAR:      return sPlayerbotAIConfig.weightTeleToExodar;
-        case AREA_ORGRIMMAR:       return sPlayerbotAIConfig.weightTeleToOrgrimmar;
-        case AREA_UNDERCITY:       return sPlayerbotAIConfig.weightTeleToUndercity;
-        case AREA_THUNDER_BLUFF:   return sPlayerbotAIConfig.weightTeleToThunderBluff;
-        case AREA_SILVERMOON_CITY: return sPlayerbotAIConfig.weightTeleToSilvermoonCity;
-        case AREA_SHATTRATH_CITY:  return sPlayerbotAIConfig.weightTeleToShattrathCity;
-        case AREA_DALARAN:         return sPlayerbotAIConfig.weightTeleToDalaran;
+        case AREA_STORMWIND_CITY:
+            return sPlayerbotAIConfig.weightTeleToStormwind;
+        case AREA_IRONFORGE:
+            return sPlayerbotAIConfig.weightTeleToIronforge;
+        case AREA_DARNASSUS:
+            return sPlayerbotAIConfig.weightTeleToDarnassus;
+        case AREA_THE_EXODAR:
+            return sPlayerbotAIConfig.weightTeleToExodar;
+        case AREA_ORGRIMMAR:
+            return sPlayerbotAIConfig.weightTeleToOrgrimmar;
+        case AREA_UNDERCITY:
+            return sPlayerbotAIConfig.weightTeleToUndercity;
+        case AREA_THUNDER_BLUFF:
+            return sPlayerbotAIConfig.weightTeleToThunderBluff;
+        case AREA_SILVERMOON_CITY:
+            return sPlayerbotAIConfig.weightTeleToSilvermoonCity;
+        case AREA_SHATTRATH_CITY:
+            return sPlayerbotAIConfig.weightTeleToShattrathCity;
+        case AREA_DALARAN:
+            return sPlayerbotAIConfig.weightTeleToDalaran;
     }
     return 0;
 }
@@ -207,13 +218,11 @@ void WorldPosition::set(WorldPosition const& pos)
 
 void WorldPosition::set(WorldObject const* pos)
 {
-    WorldRelocate(pos->GetMapId(), pos->GetPositionX(), pos->GetPositionY(), pos->GetPositionZ(), pos->GetOrientation());
+    WorldRelocate(pos->GetMapId(), pos->GetPositionX(), pos->GetPositionY(), pos->GetPositionZ(),
+                  pos->GetOrientation());
 }
 
-void WorldPosition::setMapId(uint32 id)
-{
-    m_mapId = id;
-}
+void WorldPosition::setMapId(uint32 id) { m_mapId = id; }
 
 void WorldPosition::setX(float x) { m_positionX = x; }
 
@@ -290,10 +299,7 @@ WorldPosition WorldPosition::offset(WorldPosition* center)
                          GetPositionZ() + center->GetPositionZ(), GetOrientation());
 }
 
-float WorldPosition::size()
-{
-    return GetExactDist(0.0f, 0.0f, 0.0f);
-}
+float WorldPosition::size() { return GetExactDist(0.0f, 0.0f, 0.0f); }
 
 float WorldPosition::distance(WorldPosition* center)
 {
@@ -685,62 +691,65 @@ std::vector<WorldPosition> WorldPosition::frommGridCoord(mGridCoord GridCoord)
 void WorldPosition::loadMapAndVMap(uint32 mapId, uint8 x, uint8 y)
 {
     std::string const fileName = "load_map_grid.csv";
-/*
-    if (isOverworld() && false || false)
-    {
-        if (!MMAP::MMapFactory::createOrGetMMapMgr()->loadMap(mapId, x, y))
-            if (sPlayerbotAIConfig.hasLog(fileName))
-            {
-                std::ostringstream out;
-                out << sPlayerbotAIConfig.GetTimestampStr();
-                out << "+00,\"mmap\", " << x << "," << y << "," << (TravelMgr::instance().isBadMmap(mapId, x, y) ? "0" : "1")
-                    << ",";
-                printWKT(fromGridCoord(GridCoord(x, y)), out, 1, true);
-                sPlayerbotAIConfig.log(fileName, out.str().c_str());
-            }
-    }
-    else
-    {
-        // This needs to be disabled or maps will not load.
-        // Needs more testing to check for impact on movement.
-        if (false)
-            if (!TravelMgr::instance().isBadVmap(mapId, x, y))
-            {
-                // load VMAPs for current map/grid...
-                const MapEntry* i_mapEntry = sMapStore.LookupEntry(mapId);
-                //const char* mapName = i_mapEntry ? i_mapEntry->name[sWorld->GetDefaultDbcLocale()] : "UNNAMEDMAP\x0"; //not used, (usage are commented out below), line marked for removal.
-
-                int vmapLoadResult = VMAP::VMapFactory::createOrGetVMapMgr()->loadMap(
-                    (sWorld->GetDataPath() + "vmaps").c_str(), mapId, x, y);
-                switch (vmapLoadResult)
-                {
-                    case VMAP::VMAP_LOAD_RESULT_OK:
-                        // LOG_ERROR("playerbots", "VMAP loaded name:{}, id:{}, x:{}, y:{} (vmap rep.: x:{}, y:{})",
-                        // mapName, mapId, x, y, x, y);
-                        break;
-                    case VMAP::VMAP_LOAD_RESULT_ERROR:
-                        // LOG_ERROR("playerbots", "Could not load VMAP name:{}, id:{}, x:{}, y:{} (vmap rep.: x:{},
-                        // y:{})", mapName, mapId, x, y, x, y);
-                        TravelMgr::instance().addBadVmap(mapId, x, y);
-                        break;
-                    case VMAP::VMAP_LOAD_RESULT_IGNORED:
-                        TravelMgr::instance().addBadVmap(mapId, x, y);
-                        // LOG_INFO("playerbots", "Ignored VMAP name:{}, id:{}, x:{}, y:{} (vmap rep.: x:{}, y:{})",
-                        // mapName, mapId, x, y, x, y);
-                        break;
-                }
-
+    /*
+        if (isOverworld() && false || false)
+        {
+            if (!MMAP::MMapFactory::createOrGetMMapMgr()->loadMap(mapId, x, y))
                 if (sPlayerbotAIConfig.hasLog(fileName))
                 {
                     std::ostringstream out;
                     out << sPlayerbotAIConfig.GetTimestampStr();
-                    out << "+00,\"vmap\", " << x << "," << y << ", " << (TravelMgr::instance().isBadVmap(mapId, x, y) ? "0" : "1")
+                    out << "+00,\"mmap\", " << x << "," << y << "," << (TravelMgr::instance().isBadMmap(mapId, x, y) ?
+       "0" : "1")
                         << ",";
-                    printWKT(frommGridCoord(mGridCoord(x, y)), out, 1, true);
+                    printWKT(fromGridCoord(GridCoord(x, y)), out, 1, true);
                     sPlayerbotAIConfig.log(fileName, out.str().c_str());
                 }
-            }
-*/
+        }
+        else
+        {
+            // This needs to be disabled or maps will not load.
+            // Needs more testing to check for impact on movement.
+            if (false)
+                if (!TravelMgr::instance().isBadVmap(mapId, x, y))
+                {
+                    // load VMAPs for current map/grid...
+                    const MapEntry* i_mapEntry = sMapStore.LookupEntry(mapId);
+                    //const char* mapName = i_mapEntry ? i_mapEntry->name[sWorld->GetDefaultDbcLocale()] :
+       "UNNAMEDMAP\x0"; //not used, (usage are commented out below), line marked for removal.
+
+                    int vmapLoadResult = VMAP::VMapFactory::createOrGetVMapMgr()->loadMap(
+                        (sWorld->GetDataPath() + "vmaps").c_str(), mapId, x, y);
+                    switch (vmapLoadResult)
+                    {
+                        case VMAP::VMAP_LOAD_RESULT_OK:
+                            // LOG_ERROR("playerbots", "VMAP loaded name:{}, id:{}, x:{}, y:{} (vmap rep.: x:{}, y:{})",
+                            // mapName, mapId, x, y, x, y);
+                            break;
+                        case VMAP::VMAP_LOAD_RESULT_ERROR:
+                            // LOG_ERROR("playerbots", "Could not load VMAP name:{}, id:{}, x:{}, y:{} (vmap rep.: x:{},
+                            // y:{})", mapName, mapId, x, y, x, y);
+                            TravelMgr::instance().addBadVmap(mapId, x, y);
+                            break;
+                        case VMAP::VMAP_LOAD_RESULT_IGNORED:
+                            TravelMgr::instance().addBadVmap(mapId, x, y);
+                            // LOG_INFO("playerbots", "Ignored VMAP name:{}, id:{}, x:{}, y:{} (vmap rep.: x:{}, y:{})",
+                            // mapName, mapId, x, y, x, y);
+                            break;
+                    }
+
+                    if (sPlayerbotAIConfig.hasLog(fileName))
+                    {
+                        std::ostringstream out;
+                        out << sPlayerbotAIConfig.GetTimestampStr();
+                        out << "+00,\"vmap\", " << x << "," << y << ", " << (TravelMgr::instance().isBadVmap(mapId, x,
+       y) ? "0" : "1")
+                            << ",";
+                        printWKT(frommGridCoord(mGridCoord(x, y)), out, 1, true);
+                        sPlayerbotAIConfig.log(fileName, out.str().c_str());
+                    }
+                }
+    */
     if (!TravelMgr::instance().isBadMmap(mapId, x, y))
     {
         // load navmesh
@@ -752,8 +761,8 @@ void WorldPosition::loadMapAndVMap(uint32 mapId, uint8 x, uint8 y)
         {
             std::ostringstream out;
             out << sPlayerbotAIConfig.GetTimestampStr();
-            out << "+00,\"mmap\", " << x << "," << y << "," << (TravelMgr::instance().isBadMmap(mapId, x, y) ? "0" : "1")
-                << ",";
+            out << "+00,\"mmap\", " << x << "," << y << ","
+                << (TravelMgr::instance().isBadMmap(mapId, x, y) ? "0" : "1") << ",";
             printWKT(fromGridCoord(GridCoord(x, y)), out, 1, true);
             sPlayerbotAIConfig.log(fileName, out.str().c_str());
         }
@@ -820,8 +829,7 @@ bool WorldPosition::cropPathTo(std::vector<WorldPosition>& path, float maxDistan
     if (path.empty())
         return false;
 
-    auto bestPos = std::min_element(path.begin(), path.end(),
-                                    [this](WorldPosition i, WorldPosition j)
+    auto bestPos = std::min_element(path.begin(), path.end(), [this](WorldPosition i, WorldPosition j)
                                     { return this->sqDistance(i) < this->sqDistance(j); });
 
     bool insRange = this->sqDistance(*bestPos) <= maxDistance * maxDistance;
@@ -994,7 +1002,7 @@ GameObject* GuidPosition::GetGameObject()
     if (loadedFromDB)
         return ObjectAccessor::GetSpawnedGameObjectByDBGUID(GetMapId(), GetCounter());
 
-    return getMap()->GetGameObject(*this); // fallback
+    return getMap()->GetGameObject(*this);  // fallback
 }
 
 Unit* GuidPosition::GetUnit()
@@ -1019,7 +1027,7 @@ Creature* GuidPosition::GetCreature()
     if (loadedFromDB)
         return ObjectAccessor::GetSpawnedCreatureByDBGUID(GetMapId(), GetCounter());
 
-    return getMap()->GetCreature(*this); // fallback
+    return getMap()->GetCreature(*this);  // fallback
 }
 
 Player* GuidPosition::GetPlayer()
@@ -1144,9 +1152,6 @@ bool QuestRelationTravelDestination::isActive(Player* bot)
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
     AiObjectContext* context = botAI->GetAiObjectContext();
 
-    if (botAI && !botAI->HasStrategy("rpg quest", BOT_STATE_NON_COMBAT))
-        return false;
-
     if (relation == 0)
     {
         if ((int32)questTemplate->GetQuestLevel() >= (int32)bot->GetLevel() + (int32)5)
@@ -1159,21 +1164,28 @@ bool QuestRelationTravelDestination::isActive(Player* bot)
         if (!bot->GetMap()->GetEntry()->IsWorldMap() || !bot->CanTakeQuest(questTemplate, false))
             return false;
 
-        //uint32 dialogStatus = TravelMgr::instance().getDialogStatus(bot, entry, questTemplate); //not used, shadowed by the next declaration, line marked for removal.
+        // uint32 dialogStatus = TravelMgr::instance().getDialogStatus(bot, entry, questTemplate); //not used, shadowed
+        // by the next declaration, line marked for removal.
 
         if (AI_VALUE(bool, "can fight equal"))
         {
             if (AI_VALUE(uint8, "free quest log slots") < 5)
                 return false;
 
-            //None has yellow exclamation mark.
-            if (!AI_VALUE2(bool, "group or", "following party,near leader,can accept quest npc::" + std::to_string(entry)))
-                if (!AI_VALUE2(bool, "group or", "following party,near leader,can accept quest low level npc::" + std::to_string(entry) + "need quest objective::" + std::to_string(questId))) //Noone can do this quest for a usefull reward.
+            // None has yellow exclamation mark.
+            if (!AI_VALUE2(bool, "group or",
+                           "following party,near leader,can accept quest npc::" + std::to_string(entry)))
+                if (!AI_VALUE2(bool, "group or",
+                               "following party,near leader,can accept quest low level npc::" + std::to_string(entry) +
+                                   "need quest objective::" +
+                                   std::to_string(questId)))  // Noone can do this quest for a usefull reward.
                     return false;
         }
         else
         {
-            if (!AI_VALUE2(bool, "group or", "following party,near leader,can accept quest low level npc::" + std::to_string(entry))) //Noone can pick up this quest for money.
+            if (!AI_VALUE2(bool, "group or",
+                           "following party,near leader,can accept quest low level npc::" +
+                               std::to_string(entry)))  // Noone can pick up this quest for money.
                 return false;
 
             if (AI_VALUE(uint8, "free quest log slots") < 10)
@@ -1190,8 +1202,9 @@ bool QuestRelationTravelDestination::isActive(Player* bot)
         if (!AI_VALUE2(bool, "group or", "following party,near leader,can turn in quest npc::" + std::to_string(entry)))
             return false;
 
-        //Do not try to hand-in dungeon/elite quests in instances without a group.
-        if ((questTemplate->GetType() == QUEST_TYPE_ELITE || questTemplate->GetType() == QUEST_TYPE_DUNGEON) && !AI_VALUE(bool, "can fight boss"))
+        // Do not try to hand-in dungeon/elite quests in instances without a group.
+        if ((questTemplate->GetType() == QUEST_TYPE_ELITE || questTemplate->GetType() == QUEST_TYPE_DUNGEON) &&
+            !AI_VALUE(bool, "can fight boss"))
         {
             WorldPosition pos(bot);
             if (!this->nearestPoint(&pos)->isOverworld())
@@ -1312,7 +1325,6 @@ bool RpgTravelDestination::isActive(Player* bot)
     {
         if (guid.GetEntry() == uint32(getEntry()))
             return false;
-
     }
 
     FactionTemplateEntry const* factionEntry = sFactionTemplateStore.LookupEntry(cInfo->faction);
@@ -1485,8 +1497,8 @@ TravelTarget::~TravelTarget()
         return;
 
     releaseVisitors();
-    // TravelMgr::instance().botTargets.erase(std::remove(TravelMgr::instance().botTargets.begin(), TravelMgr::instance().botTargets.end(), this),
-    // TravelMgr::instance().botTargets.end());
+    // TravelMgr::instance().botTargets.erase(std::remove(TravelMgr::instance().botTargets.begin(),
+    // TravelMgr::instance().botTargets.end(), this), TravelMgr::instance().botTargets.end());
 }
 
 void TravelTarget::setTarget(TravelDestination* tDestination1, WorldPosition* wPosition1, bool groupCopy1)
@@ -2031,8 +2043,8 @@ void TravelMgr::LoadQuestTravelTable()
 
                     if (flag & (uint32)QuestRelationFlag::questGiver)
                     {
-                        loc = new QuestRelationTravelDestination(
-                            questId, entry, 0, sPlayerbotAIConfig.tooCloseDistance, sPlayerbotAIConfig.sightDistance);
+                        loc = new QuestRelationTravelDestination(questId, entry, 0, sPlayerbotAIConfig.tooCloseDistance,
+                                                                 sPlayerbotAIConfig.sightDistance);
                         loc->setExpireDelay(5 * 60 * 1000);
                         loc->setMaxVisitors(15, 0);
                         container->questGivers.push_back(loc);
@@ -2040,8 +2052,8 @@ void TravelMgr::LoadQuestTravelTable()
                     }
                     if (flag & (uint32)QuestRelationFlag::questTaker)
                     {
-                        loc = new QuestRelationTravelDestination(
-                            questId, entry, 1, sPlayerbotAIConfig.tooCloseDistance, sPlayerbotAIConfig.sightDistance);
+                        loc = new QuestRelationTravelDestination(questId, entry, 1, sPlayerbotAIConfig.tooCloseDistance,
+                                                                 sPlayerbotAIConfig.sightDistance);
                         loc->setExpireDelay(5 * 60 * 1000);
                         loc->setMaxVisitors(15, 0);
                         container->questTakers.push_back(loc);
@@ -2580,8 +2592,8 @@ void TravelMgr::LoadQuestTravelTable()
 
                                 if (pos.distance(&lPos) == 0)
                                 {
-                                    TravelNode* node = TravelNodeMap::instance().addNode(&pos, data->name, true, true, true,
-   iter.first);
+                                    TravelNode* node = TravelNodeMap::instance().addNode(&pos, data->name, true, true,
+   true, iter.first);
 
                                     if (!prevNode)
                                     {
@@ -2616,8 +2628,8 @@ void TravelMgr::LoadQuestTravelTable()
 
                                     if (pos.distance(&lPos) == 0)
                                     {
-                                        TravelNode* node = TravelNodeMap::instance().addNode(&pos, data->name, true, true, true,
-   iter.first); if (node != prevNode)
+                                        TravelNode* node = TravelNodeMap::instance().addNode(&pos, data->name, true,
+   true, true, iter.first); if (node != prevNode)
                                         {
                                             float totalTime = (p.second->TimeSeg - timeStart) / 1000.0f;
                                             TravelNodePath travelPath(0.1f, totalTime, (uint8)
@@ -2655,7 +2667,8 @@ void TravelMgr::LoadQuestTravelTable()
 
                         if (p->delay > 0)
                         {
-                            TravelNode* node = TravelNodeMap::instance().addNode(&pos, data->name, true, true, true, iter.first);
+                            TravelNode* node = TravelNodeMap::instance().addNode(&pos, data->name, true, true, true,
+   iter.first);
 
                             if (!prevNode)
                             {
@@ -3460,7 +3473,7 @@ void TravelMgr::LoadQuestTravelTable()
                                     {
                                         Strategy* strat = con->GetStrategy(stratName);
 
-                                        const std::vector<NextAction> defaultActions  = strat->getDefaultActions();
+                                        const std::vector<NextAction> defaultActions = strat->getDefaultActions();
 
                                         if (defaultActions.size() > 0)
                                         {
@@ -3858,8 +3871,7 @@ std::vector<WorldPosition*> TravelMgr::getNextPoint(WorldPosition* center, std::
     // 1 + 1000 * exp(-1 * pow(point.distance(center) / 400.0, 2)); });
 
     // List of weights based on distance (Twice the distance = half the weight). Caps out at 200.0000 range.
-    std::transform(retVec.begin(), retVec.end(), std::back_inserter(weights),
-                   [center](WorldPosition* point)
+    std::transform(retVec.begin(), retVec.end(), std::back_inserter(weights), [center](WorldPosition* point)
                    { return static_cast<uint32>(200000.f / (1.f + point->distance(center))); });
 
     Acore::Containers::RandomShuffle(retVec);
@@ -3904,8 +3916,7 @@ std::vector<WorldPosition> TravelMgr::getNextPoint(WorldPosition center, std::ve
     // List of weights based on distance (Gausian curve that starts at 100 and lower to 1 at 1000 distance)
     std::vector<uint32> weights;
 
-    std::transform(points.begin(), points.end(), std::back_inserter(weights),
-                   [center](WorldPosition point)
+    std::transform(points.begin(), points.end(), std::back_inserter(weights), [center](WorldPosition point)
                    { return 1 + 1000 * static_cast<uint32>(exp(-1.f * pow(point.distance(center) / 400.f, 2.f))); });
 
     // Total sum of all those weights.
@@ -4427,7 +4438,7 @@ std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player*
     if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(bot->GetZoneId()))
         botInCapital = (area->flags & AREA_FLAG_CAPITAL) != 0;
 
-    //Simplify destination delection. Its either target cities (Based on config value) or target world.
+    // Simplify destination delection. Its either target cities (Based on config value) or target world.
     std::vector<uint32> candidateZones;
     if (botLevel >= 10 && !botInCapital && urand(0, 100) < sPlayerbotAIConfig.probTeleToBankers * 100)
     {
@@ -4490,9 +4501,8 @@ const std::vector<WorldLocation> TravelMgr::GetTeleportLocations(Player* bot)
 
 const std::vector<WorldLocation> TravelMgr::GetTravelHubs(Player* bot)
 {
-    std::vector<WorldLocation> locs = bot->GetTeamId() == TEAM_ALLIANCE
-                                                 ? allianceHubsPerLevelCache[bot->GetLevel()]
-                                                 : hordeHubsPerLevelCache[bot->GetLevel()];
+    std::vector<WorldLocation> locs = bot->GetTeamId() == TEAM_ALLIANCE ? allianceHubsPerLevelCache[bot->GetLevel()]
+                                                                        : hordeHubsPerLevelCache[bot->GetLevel()];
     return locs;
 }
 
@@ -4517,9 +4527,7 @@ std::vector<WorldLocation> TravelMgr::GetCityLocations(Player* bot)
 
         TeamId cityTeamId = capital->team;
 
-        if (cityTeamId == botTeamId ||
-            (cityTeamId == TEAM_NEUTRAL)
-           )
+        if (cityTeamId == botTeamId || (cityTeamId == TEAM_NEUTRAL))
             validBankerCities.insert(capital->zoneId);
     }
     // Fallback if no valid cities
@@ -4551,7 +4559,7 @@ std::vector<WorldLocation> TravelMgr::GetCityLocations(Player* bot)
     uint32 selectedBankerEntry = bankers[urand(0, bankers.size() - 1)];
     auto locIt = bankerEntryToLocation.find(selectedBankerEntry);
     if (locIt != bankerEntryToLocation.end())
-        return { locIt->second };
+        return {locIt->second};
     // Fallback if something went wrong
     return fallbackLocations;
 }
@@ -4559,77 +4567,77 @@ std::vector<WorldLocation> TravelMgr::GetCityLocations(Player* bot)
 void TravelMgr::PrepareZone2LevelBracket()
 {
     // Classic WoW - starter zones
-    zone2LevelBracket[AREA_DUN_MOROGH]        = {5, 12};
-    zone2LevelBracket[AREA_ELWYNN_FOREST]     = {5, 12};
-    zone2LevelBracket[AREA_DUROTAR]           = {5, 12};
-    zone2LevelBracket[AREA_TIRISFAL_GLADES]   = {5, 12};
-    zone2LevelBracket[AREA_TELDRASSIL]        = {5, 12};
-    zone2LevelBracket[AREA_MULGORE]           = {5, 12};
-    zone2LevelBracket[AREA_EVERSONG_WOODS]    = {5, 12};
-    zone2LevelBracket[AREA_AZUREMYST_ISLE]    = {5, 12};
+    zone2LevelBracket[AREA_DUN_MOROGH] = {5, 12};
+    zone2LevelBracket[AREA_ELWYNN_FOREST] = {5, 12};
+    zone2LevelBracket[AREA_DUROTAR] = {5, 12};
+    zone2LevelBracket[AREA_TIRISFAL_GLADES] = {5, 12};
+    zone2LevelBracket[AREA_TELDRASSIL] = {5, 12};
+    zone2LevelBracket[AREA_MULGORE] = {5, 12};
+    zone2LevelBracket[AREA_EVERSONG_WOODS] = {5, 12};
+    zone2LevelBracket[AREA_AZUREMYST_ISLE] = {5, 12};
 
     // Classic WoW - low level zones
-    zone2LevelBracket[AREA_THE_BARRENS]       = {10, 25};
-    zone2LevelBracket[AREA_LOCH_MODAN]        = {10, 20};
-    zone2LevelBracket[AREA_WESTFALL]          = {10, 21};
+    zone2LevelBracket[AREA_THE_BARRENS] = {10, 25};
+    zone2LevelBracket[AREA_LOCH_MODAN] = {10, 20};
+    zone2LevelBracket[AREA_WESTFALL] = {10, 21};
     zone2LevelBracket[AREA_SILVERPINE_FOREST] = {10, 23};
-    zone2LevelBracket[AREA_DARKSHORE]         = {10, 21};
-    zone2LevelBracket[AREA_GHOSTLANDS]        = {10, 22};
-    zone2LevelBracket[AREA_BLOODMYST_ISLE]    = {10, 21};
+    zone2LevelBracket[AREA_DARKSHORE] = {10, 21};
+    zone2LevelBracket[AREA_GHOSTLANDS] = {10, 22};
+    zone2LevelBracket[AREA_BLOODMYST_ISLE] = {10, 21};
 
     // Classic WoW - mid-level zones
-    zone2LevelBracket[AREA_DUSKWOOD]             = {19, 33};
-    zone2LevelBracket[AREA_WETLANDS]             = {21, 30};
-    zone2LevelBracket[AREA_REDRIDGE_MOUNTAINS]   = {16, 28};
-    zone2LevelBracket[AREA_HILLSBRAD_FOOTHILLS]  = {20, 34};
-    zone2LevelBracket[AREA_ASHENVALE]            = {18, 33};
-    zone2LevelBracket[AREA_THOUSAND_NEEDLES]     = {24, 36};
+    zone2LevelBracket[AREA_DUSKWOOD] = {19, 33};
+    zone2LevelBracket[AREA_WETLANDS] = {21, 30};
+    zone2LevelBracket[AREA_REDRIDGE_MOUNTAINS] = {16, 28};
+    zone2LevelBracket[AREA_HILLSBRAD_FOOTHILLS] = {20, 34};
+    zone2LevelBracket[AREA_ASHENVALE] = {18, 33};
+    zone2LevelBracket[AREA_THOUSAND_NEEDLES] = {24, 36};
     zone2LevelBracket[AREA_STONETALON_MOUNTAINS] = {16, 29};
 
     // Classic WoW - 30-52 zones
-    zone2LevelBracket[AREA_BADLANDS]            = {36, 46};
-    zone2LevelBracket[AREA_SWAMP_OF_SORROWS]    = {36, 46};
-    zone2LevelBracket[AREA_DUSTWALLOW_MARSH]    = {35, 46};
-    zone2LevelBracket[AREA_AZSHARA]             = {45, 52};
-    zone2LevelBracket[AREA_STRANGLETHORN_VALE]  = {32, 47};
-    zone2LevelBracket[AREA_ARATHI_HIGHLANDS]    = {30, 42};
-    zone2LevelBracket[AREA_THE_HINTERLANDS]     = {42, 51};
-    zone2LevelBracket[AREA_SEARING_GORGE]       = {45, 51};
-    zone2LevelBracket[AREA_FERALAS]             = {40, 52};
-    zone2LevelBracket[AREA_DESOLACE]            = {30, 41};
-    zone2LevelBracket[AREA_TANARIS]             = {41, 52};
+    zone2LevelBracket[AREA_BADLANDS] = {36, 46};
+    zone2LevelBracket[AREA_SWAMP_OF_SORROWS] = {36, 46};
+    zone2LevelBracket[AREA_DUSTWALLOW_MARSH] = {35, 46};
+    zone2LevelBracket[AREA_AZSHARA] = {45, 52};
+    zone2LevelBracket[AREA_STRANGLETHORN_VALE] = {32, 47};
+    zone2LevelBracket[AREA_ARATHI_HIGHLANDS] = {30, 42};
+    zone2LevelBracket[AREA_THE_HINTERLANDS] = {42, 51};
+    zone2LevelBracket[AREA_SEARING_GORGE] = {45, 51};
+    zone2LevelBracket[AREA_FERALAS] = {40, 52};
+    zone2LevelBracket[AREA_DESOLACE] = {30, 41};
+    zone2LevelBracket[AREA_TANARIS] = {41, 52};
 
     // Classic WoW - top level zones
-    zone2LevelBracket[AREA_BLASTED_LANDS]        = {52, 57};
-    zone2LevelBracket[AREA_WESTERN_PLAGUELANDS]  = {50, 60};
-    zone2LevelBracket[AREA_BURNING_STEPPES]      = {51, 60};
-    zone2LevelBracket[AREA_EASTERN_PLAGUELANDS]  = {54, 62};
-    zone2LevelBracket[361]                       = {47, 57}; // Felwood (no AREA_ define)
-    zone2LevelBracket[490]                       = {49, 56}; // Un'Goro Crater (no AREA_ define)
-    zone2LevelBracket[AREA_WINTERSPRING]         = {54, 61};
-    zone2LevelBracket[AREA_SILITHUS]             = {54, 63};
+    zone2LevelBracket[AREA_BLASTED_LANDS] = {52, 57};
+    zone2LevelBracket[AREA_WESTERN_PLAGUELANDS] = {50, 60};
+    zone2LevelBracket[AREA_BURNING_STEPPES] = {51, 60};
+    zone2LevelBracket[AREA_EASTERN_PLAGUELANDS] = {54, 62};
+    zone2LevelBracket[361] = {47, 57};  // Felwood (no AREA_ define)
+    zone2LevelBracket[490] = {49, 56};  // Un'Goro Crater (no AREA_ define)
+    zone2LevelBracket[AREA_WINTERSPRING] = {54, 61};
+    zone2LevelBracket[AREA_SILITHUS] = {54, 63};
 
     // The Burning Crusade zones
-    zone2LevelBracket[AREA_HELLFIRE_PENINSULA]    = {58, 66};
-    zone2LevelBracket[AREA_NAGRAND]               = {64, 70};
-    zone2LevelBracket[AREA_TEROKKAR_FOREST]       = {62, 73};
-    zone2LevelBracket[AREA_SHADOWMOON_VALLEY]     = {66, 73};
-    zone2LevelBracket[AREA_ZANGARMARSH]           = {60, 67};
+    zone2LevelBracket[AREA_HELLFIRE_PENINSULA] = {58, 66};
+    zone2LevelBracket[AREA_NAGRAND] = {64, 70};
+    zone2LevelBracket[AREA_TEROKKAR_FOREST] = {62, 73};
+    zone2LevelBracket[AREA_SHADOWMOON_VALLEY] = {66, 73};
+    zone2LevelBracket[AREA_ZANGARMARSH] = {60, 67};
     zone2LevelBracket[AREA_BLADES_EDGE_MOUNTAINS] = {64, 73};
-    zone2LevelBracket[AREA_NETHERSTORM]           = {67, 73};
-    zone2LevelBracket[AREA_ISLE_OF_QUEL_DANAS]    = {68, 73};
+    zone2LevelBracket[AREA_NETHERSTORM] = {67, 73};
+    zone2LevelBracket[AREA_ISLE_OF_QUEL_DANAS] = {68, 73};
 
     // Wrath of the Lich King zones
-    zone2LevelBracket[AREA_DRAGONBLIGHT]        = {71, 77};
-    zone2LevelBracket[AREA_ZUL_DRAK]            = {74, 80};
-    zone2LevelBracket[AREA_THE_STORM_PEAKS]     = {77, 80};
-    zone2LevelBracket[210]                      = {77, 80}; // Icecrown Glacier (no AREA_ define)
-    zone2LevelBracket[AREA_GRIZZLY_HILLS]       = {72, 78};
-    zone2LevelBracket[AREA_HOWLING_FJORD]       = {68, 74};
-    zone2LevelBracket[AREA_CRYSTALSONG_FOREST]  = {77, 80};
-    zone2LevelBracket[AREA_BOREAN_TUNDRA]       = {68, 75};
-    zone2LevelBracket[AREA_SHOLAZAR_BASIN]      = {75, 80};
-    zone2LevelBracket[AREA_WINTERGRASP]         = {79, 80};
+    zone2LevelBracket[AREA_DRAGONBLIGHT] = {71, 77};
+    zone2LevelBracket[AREA_ZUL_DRAK] = {74, 80};
+    zone2LevelBracket[AREA_THE_STORM_PEAKS] = {77, 80};
+    zone2LevelBracket[210] = {77, 80};  // Icecrown Glacier (no AREA_ define)
+    zone2LevelBracket[AREA_GRIZZLY_HILLS] = {72, 78};
+    zone2LevelBracket[AREA_HOWLING_FJORD] = {68, 74};
+    zone2LevelBracket[AREA_CRYSTALSONG_FOREST] = {77, 80};
+    zone2LevelBracket[AREA_BOREAN_TUNDRA] = {68, 75};
+    zone2LevelBracket[AREA_SHOLAZAR_BASIN] = {75, 80};
+    zone2LevelBracket[AREA_WINTERGRASP] = {79, 80};
 
     // Override with values from config
     for (auto const& [zoneId, bracketPair] : sPlayerbotAIConfig.zoneBrackets)
@@ -4654,8 +4662,8 @@ void TravelMgr::PrepareDestinationCache()
             continue;
 
         uint16 mapId = creatureData.mapid;
-        if (std::find(sPlayerbotAIConfig.randomBotMaps.begin(), sPlayerbotAIConfig.randomBotMaps.end(), mapId)
-                      == sPlayerbotAIConfig.randomBotMaps.end())
+        if (std::find(sPlayerbotAIConfig.randomBotMaps.begin(), sPlayerbotAIConfig.randomBotMaps.end(), mapId) ==
+            sPlayerbotAIConfig.randomBotMaps.end())
             continue;
 
         float x = creatureData.posX;
@@ -4675,18 +4683,13 @@ void TravelMgr::PrepareDestinationCache()
         uint32 areaId = area->zone ? area->zone : area->ID;
 
         // CREATURES
-        if (creatureTemplate->npcflag == 0 &&
-            creatureTemplate->lootid != 0 &&
-            creatureTemplate->maxlevel - creatureTemplate->minlevel < 3 &&
-            creatureTemplate->Entry != 32820 && creatureTemplate->Entry != 24196 &&
-            creatureTemplate->Entry != 30627 && creatureTemplate->Entry != 30617 &&
-            creatureData.spawntimesecs < 1000 &&
-            creatureTemplate->faction != 11 && creatureTemplate->faction != 71 &&
-            creatureTemplate->faction != 79 && creatureTemplate->faction != 85 &&
-            creatureTemplate->faction != 188 && creatureTemplate->faction != 1575 &&
-            (creatureTemplate->unit_flags & 256) == 0 &&
-            (creatureTemplate->unit_flags & 4096) == 0 &&
-            creatureTemplate->rank == 0)
+        if (creatureTemplate->npcflag == 0 && creatureTemplate->lootid != 0 &&
+            creatureTemplate->maxlevel - creatureTemplate->minlevel < 3 && creatureTemplate->Entry != 32820 &&
+            creatureTemplate->Entry != 24196 && creatureTemplate->Entry != 30627 && creatureTemplate->Entry != 30617 &&
+            creatureData.spawntimesecs < 1000 && creatureTemplate->faction != 11 && creatureTemplate->faction != 71 &&
+            creatureTemplate->faction != 79 && creatureTemplate->faction != 85 && creatureTemplate->faction != 188 &&
+            creatureTemplate->faction != 1575 && (creatureTemplate->unit_flags & 256) == 0 &&
+            (creatureTemplate->unit_flags & 4096) == 0 && creatureTemplate->rank == 0)
         {
             int32 roundX = static_cast<int32>(std::lround(x / 50.0f));
             int32 roundY = static_cast<int32>(std::lround(y / 50.0f));
@@ -4699,7 +4702,7 @@ void TravelMgr::PrepareDestinationCache()
         // Entry 3838 is Vesprystus in Rut'Theran. Need Travel Node system to resolve this one.
         else if ((creatureTemplate->npcflag & UNIT_NPC_FLAG_FLIGHTMASTER ||
                   creatureTemplate->npcflag & UNIT_NPC_FLAG_INNKEEPER) &&
-                creatureTemplate->Entry != 3838 && creatureTemplate->Entry != 29480)
+                 creatureTemplate->Entry != 3838 && creatureTemplate->Entry != 29480)
         {
             FactionTemplateEntry const* factionEntry = sFactionTemplateStore.LookupEntry(creatureTemplate->faction);
             bool forHorde = !(factionEntry->hostileMask & 4);
@@ -4732,17 +4735,15 @@ void TravelMgr::PrepareDestinationCache()
                 flightMastersCount++;
 
                 // Zones that have flight masters but no innkeepers — use flight master as hub
-                static const std::set<uint32> zonesWithoutInnkeeper = {
-                    AREA_BLASTED_LANDS,
-                    AREA_AZSHARA,
-                    AREA_WESTERN_PLAGUELANDS,
-                    AREA_BURNING_STEPPES,
-                    AREA_SEARING_GORGE,
-                    361,  // Felwood (47-57)
-                    490,  // Un'Goro Crater (49-56)
-                    AREA_CRYSTALSONG_FOREST,
-                    AREA_WINTERGRASP
-                };
+                static const std::set<uint32> zonesWithoutInnkeeper = {AREA_BLASTED_LANDS,
+                                                                       AREA_AZSHARA,
+                                                                       AREA_WESTERN_PLAGUELANDS,
+                                                                       AREA_BURNING_STEPPES,
+                                                                       AREA_SEARING_GORGE,
+                                                                       361,  // Felwood (47-57)
+                                                                       490,  // Un'Goro Crater (49-56)
+                                                                       AREA_CRYSTALSONG_FOREST,
+                                                                       AREA_WINTERGRASP};
                 if (zonesWithoutInnkeeper.count(areaId))
                 {
                     LevelBracket bracket = zone2LevelBracket[areaId];
@@ -4775,10 +4776,8 @@ void TravelMgr::PrepareDestinationCache()
             }
         }
         // === BANKERS ===
-        else if (creatureTemplate->npcflag & UNIT_NPC_FLAG_BANKER &&
-                 creatureTemplate->npcflag != 135298 &&
-                 creatureTemplate->minlevel != 55 &&
-                 creatureTemplate->minlevel != 65 &&
+        else if (creatureTemplate->npcflag & UNIT_NPC_FLAG_BANKER && creatureTemplate->npcflag != 135298 &&
+                 creatureTemplate->minlevel != 55 && creatureTemplate->minlevel != 65 &&
                  creatureTemplate->faction != 35 && creatureTemplate->faction != 474 &&
                  creatureTemplate->faction != 69 && creatureTemplate->faction != 57 &&
                  creatureTemplate->Entry != 30606 && creatureTemplate->Entry != 30608 &&
@@ -4791,15 +4790,15 @@ void TravelMgr::PrepareDestinationCache()
             for (uint32 l = 1; l <= maxLevel; l++)
             {
                 // Bots 1-60 go to base game bankers (all have minlevel 30 or 45)
-                if (l <=60 && level > 45)
+                if (l <= 60 && level > 45)
                     continue;
 
                 // Bots 61-70 go to Shattrath bankers (all have minlevel 60 or 70)
-                if ((l >=61 && l <=70) && (level < 60 || level > 70))
+                if ((l >= 61 && l <= 70) && (level < 60 || level > 70))
                     continue;
 
                 // Bots 71+ go to Dalaran bankers (all have minlevel 75)
-                if ((l >=71) && level != 75)
+                if ((l >= 71) && level != 75)
                     continue;
 
                 bankerLocsPerLevelCache[(uint8)l].push_back(bLoc);
@@ -4822,10 +4821,10 @@ void TravelMgr::PrepareDestinationCache()
                 if (l < 1 || l > int32(maxLevel))
                     continue;
 
-                locsPerLevelCache[(uint8)l].push_back(WorldLocation(std::get<0>(gridTuple),
-                    static_cast<float>(std::get<1>(gridTuple)) * 50.0f,
-                    static_cast<float>(std::get<2>(gridTuple)) * 50.0f,
-                    static_cast<float>(std::get<3>(gridTuple)) * 50.0f));
+                locsPerLevelCache[(uint8)l].push_back(
+                    WorldLocation(std::get<0>(gridTuple), static_cast<float>(std::get<1>(gridTuple)) * 50.0f,
+                                  static_cast<float>(std::get<2>(gridTuple)) * 50.0f,
+                                  static_cast<float>(std::get<3>(gridTuple)) * 50.0f));
             }
         }
     }
@@ -4871,5 +4870,6 @@ void TravelMgr::PrepareDestinationCache()
             break;
         }
     }
-    LOG_INFO("playerbots", ">> {} flight masters and {} innkeepers and {} banker locations for level collected.", flightMastersCount, innkeepersCount, bankerCount);
+    LOG_INFO("playerbots", ">> {} flight masters and {} innkeepers and {} banker locations for level collected.",
+             flightMastersCount, innkeepersCount, bankerCount);
 }

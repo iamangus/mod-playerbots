@@ -336,10 +336,54 @@ core image building under `local-safe-logout`. Also noted (not fixed here):
 the pre-existing whisper-logout chat command path calls the same instant logout
 from a map thread and carries the same latent crash risk.
 
-**Next:** Deploy the safe-logout image, verify zero bots and clean online flags,
-delete the bot cohort via the canonical `Player::DeleteFromDB` table set, clear
-stale Redis bot records, run the mandatory clean reset, resume the controller,
-and verify diverse new-cohort creation live.
+**Movement stall diagnosis (in progress):** The user reported diversity fixed but
+bots stationary and chatting in circles. Confirmed from controller logs: every
+`accept_quest` task ends blocked with `primitive repeatedly failed: quest
+destination unavailable` — the native `navigate_to_quest_giver` rejects, the
+controller retries/blocks/re-plans, so bots never move and the LLM falls back to
+chat. The rejection comes from `FindQuestDestination` finding nothing: the quest
+travel table that backs it is loaded by `LoadQuestTravelTable()`, which our
+branch moved to an `OnStartup` hook (4ae3370a) that fires only after the world is
+ready and bots can log in — a startup race; upstream PR #1462 had removed the
+original config-init call site entirely. Diagnosis was slowed by the deployed
+logger config suppressing all module INFO logs (`Logger.root=2`, no
+`Logger.playerbots`), making log-absence non-evidence.
+
+**Root cause found — dead strategy gate broke ALL quest navigation:** Every
+`accept_quest` task failed with `quest destination unavailable` because
+`QuestRelationTravelDestination::isActive` (TravelMgr.cpp:1147) required a
+`"rpg quest"` strategy that does not exist anywhere in this codebase — no
+creator registration, no `addStrategy` call (introduced by upstream commit
+0008d84f, likely ported from a fork where the strategy existed). Since no bot
+can ever have it, every quest-giver/taker destination was permanently inactive:
+agent quest navigation AND legacy travel-questing both structurally broken.
+`QuestObjectiveTravelDestination::isActive` has no such check, which is why kill
+tasks worked while quest-giver navigation failed. The travel table load race
+(fixed earlier in this session) was a second, separate defect that had hidden
+this one. Verified `getDialogStatus` (the remaining availability gate) is not
+distance-based, so solo agent bots pass level/availability checks. Removed the
+dead check (kept `context`, used by AI_VALUE macros). Legacy quest-travel
+behavior resumes its pre-0008d84f semantics; remaining `isActive` guards
+(level, map, can-take, group values) are unchanged. Formatting/codestyle pass;
+core image building under `local-quest-destinations`.
+
+**Solo quest-navigation fix:** With the dead strategy gate removed, quest
+acceptance works for some bots but most still block — the remaining gate is the
+legacy group coupling inside `QuestRelationTravelDestination::isActive`
+("can fight equal", "following party" values): solo agent bots fail it until
+they have fought something, explaining the bot-dependent mixed outcomes. Only
+the giver path filters on `isActive` (`getQuestTravelDestinations` passes
+`ignoreInactive=true`, and the turn-in/objective branches never filter).
+Replaced the giver-path filter in the agent's `FindQuestDestination` with the
+same map-match and quest-level rules applied directly; level and availability
+are validated again by the accept primitive (CanTakeQuest/quest log) before any
+quest is taken. Legacy paths are unchanged. Formatting/codestyle pass; core
+image building under `local-solo-quest-navigation`. Earlier observed in this
+window: dead bots handled with Spirit-Healer resurrection navigation (working
+behavior); travel table load confirmed at 6778 ms during world init.
+
+**Next:** Deploy, mandatory reset, verify all solo bots accept quests and
+progress through objectives; then resume TASK-011 validation.
 
 ### TASK-012 — Remove legacy autonomous AI tree (queued)
 

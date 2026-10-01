@@ -5,16 +5,18 @@
  */
 
 #include "Playerbots.h"
+
+#include <mysqld_error.h>
+
+#include "AgentPopulation.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
+#include "BuiltInConfig.h"
 #include "Channel.h"
 #include "CheckMountStateAction.h"
 #include "Config.h"
-#include "BuiltInConfig.h"
 #include "DBUpdater.h"
 #include "DatabaseEnv.h"
-#include "PlayerbotsDatabase.h"
-#include <mysqld_error.h>
 #include "GuildTaskMgr.h"
 #include "PlayerScript.h"
 #include "PlayerbotAIConfig.h"
@@ -22,10 +24,10 @@
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotSpellRepository.h"
 #include "PlayerbotWorldThreadProcessor.h"
+#include "PlayerbotsDatabase.h"
 #include "RandomPlayerbotMgr.h"
-#include "AgentPopulation.h"
-#include "TravelMgr.h"
 #include "ScriptMgr.h"
+#include "TravelMgr.h"
 #include "cmath"
 
 class PlayerbotsDatabaseScript : public DatabaseScript
@@ -68,11 +70,9 @@ public:
         if (updatesEnabled)
         {
             DBUpdaterInfo const info = {
-                "Playerbots",
-                BuiltInConfig::GetSourceDirectory() + "/modules/mod-playerbots",
+                "Playerbots", BuiltInConfig::GetSourceDirectory() + "/modules/mod-playerbots",
                 BuiltInConfig::GetSourceDirectory() + "/modules/mod-playerbots/data/sql/playerbots/base/",
-                "db_playerbot"
-            };
+                "db_playerbot"};
 
             if (!ModuleDBUpdater::Populate(PlayerbotsDatabase, info))
             {
@@ -89,7 +89,8 @@ public:
 
         if (!PlayerbotsDatabase.PrepareStatements())
         {
-            LOG_ERROR("server.playerbots", "Could not prepare statements of the playerbots database, see log for details.");
+            LOG_ERROR("server.playerbots",
+                      "Could not prepare statements of the playerbots database, see log for details.");
             return false;
         }
 
@@ -122,18 +123,14 @@ public:
 class PlayerbotsPlayerScript : public PlayerScript
 {
 public:
-    PlayerbotsPlayerScript() : PlayerScript("PlayerbotsPlayerScript", {
-        PLAYERHOOK_ON_LOGIN,
-        PLAYERHOOK_ON_AFTER_UPDATE,
-        PLAYERHOOK_ON_BEFORE_CRITERIA_PROGRESS,
-        PLAYERHOOK_ON_BEFORE_ACHI_COMPLETE,
-        PLAYERHOOK_CAN_PLAYER_USE_PRIVATE_CHAT,
-        PLAYERHOOK_CAN_PLAYER_USE_GROUP_CHAT,
-        PLAYERHOOK_CAN_PLAYER_USE_GUILD_CHAT,
-        PLAYERHOOK_CAN_PLAYER_USE_CHANNEL_CHAT,
-        PLAYERHOOK_ON_GIVE_EXP,
-        PLAYERHOOK_ON_BEFORE_TELEPORT
-    }) {}
+    PlayerbotsPlayerScript()
+        : PlayerScript("PlayerbotsPlayerScript",
+                       {PLAYERHOOK_ON_LOGIN, PLAYERHOOK_ON_AFTER_UPDATE, PLAYERHOOK_ON_BEFORE_CRITERIA_PROGRESS,
+                        PLAYERHOOK_ON_BEFORE_ACHI_COMPLETE, PLAYERHOOK_CAN_PLAYER_USE_PRIVATE_CHAT,
+                        PLAYERHOOK_CAN_PLAYER_USE_GROUP_CHAT, PLAYERHOOK_CAN_PLAYER_USE_GUILD_CHAT,
+                        PLAYERHOOK_CAN_PLAYER_USE_CHANNEL_CHAT, PLAYERHOOK_ON_GIVE_EXP, PLAYERHOOK_ON_BEFORE_TELEPORT})
+    {
+    }
 
     void OnPlayerLogin(Player* player) override
     {
@@ -149,17 +146,19 @@ public:
             // but it should be publicly accessible and include all modifications you've made
             if (sPlayerbotAIConfig.enabled)
             {
-                ChatHandler(player->GetSession()).SendSysMessage(
-                    "|cff00ff00This server runs with |cff00ccffmod-playerbots|r "
-                    "|cffcccccchttps://github.com/mod-playerbots/mod-playerbots|r");
+                ChatHandler(player->GetSession())
+                    .SendSysMessage(
+                        "|cff00ff00This server runs with |cff00ccffmod-playerbots|r "
+                        "|cffcccccchttps://github.com/mod-playerbots/mod-playerbots|r");
             }
 
             if (sPlayerbotAIConfig.enabled || sPlayerbotAIConfig.randomBotAutologin)
             {
                 std::string maxAllowedBotCount = std::to_string(sRandomPlayerbotMgr.GetMaxAllowedBotCount());
 
-                ChatHandler(player->GetSession()).SendSysMessage(
-                    "|cff00ff00Playerbots:|r The server is configured with " + maxAllowedBotCount + " bots.");
+                ChatHandler(player->GetSession())
+                    .SendSysMessage("|cff00ff00Playerbots:|r The server is configured with " + maxAllowedBotCount +
+                                    " bots.");
             }
         }
     }
@@ -282,7 +281,8 @@ public:
         if (playerbotMgr == nullptr)
             return true;
 
-        for (PlayerBotMap::const_iterator it = playerbotMgr->GetPlayerBotsBegin(); it != playerbotMgr->GetPlayerBotsEnd(); ++it)
+        for (PlayerBotMap::const_iterator it = playerbotMgr->GetPlayerBotsBegin();
+             it != playerbotMgr->GetPlayerBotsEnd(); ++it)
         {
             Player* const bot = it->second;
 
@@ -370,9 +370,7 @@ public:
 class PlayerbotsServerScript : public ServerScript
 {
 public:
-    PlayerbotsServerScript() : ServerScript("PlayerbotsServerScript", {
-        SERVERHOOK_CAN_PACKET_RECEIVE
-    }) {}
+    PlayerbotsServerScript() : ServerScript("PlayerbotsServerScript", {SERVERHOOK_CAN_PACKET_RECEIVE}) {}
 
     void OnPacketReceived(WorldSession* session, WorldPacket const& packet) override
     {
@@ -385,11 +383,10 @@ public:
 class PlayerbotsWorldScript : public WorldScript
 {
 public:
-    PlayerbotsWorldScript() : WorldScript("PlayerbotsWorldScript", {
-        WORLDHOOK_ON_BEFORE_WORLD_INITIALIZED,
-        WORLDHOOK_ON_STARTUP,
-        WORLDHOOK_ON_UPDATE
-    }) {}
+    PlayerbotsWorldScript()
+        : WorldScript("PlayerbotsWorldScript", {WORLDHOOK_ON_BEFORE_WORLD_INITIALIZED, WORLDHOOK_ON_UPDATE})
+    {
+    }
 
     void OnBeforeWorldInitialized() override
     {
@@ -418,16 +415,20 @@ public:
         LOG_INFO("server.loading", ">> Loaded playerbots config in {} ms", GetMSTimeDiffToNow(oldMSTime));
         LOG_INFO("server.loading", " ");
 
+        // Quest navigation primitives need the travel table before any bot can
+        // log in; the world is still initializing here, so the synchronous
+        // build cannot race bot logins the way a post-ready hook would.
+        if (sPlayerbotAIConfig.agentBridgeEnabled)
+        {
+            uint32 const travelStart = getMSTime();
+            sTravelMgr.LoadQuestTravelTable();
+            LOG_INFO("server.loading", ">> Loaded quest travel table in {} ms", GetMSTimeDiffToNow(travelStart));
+        }
+
         PlayerbotSpellRepository::Instance().Initialize();
         CheckMountStateAction::LoadPreferredMounts();
 
         LOG_INFO("server.loading", "Playerbots World Thread Processor initialized");
-    }
-
-    void OnStartup() override
-    {
-        if (sPlayerbotAIConfig.agentBridgeEnabled)
-            sTravelMgr.LoadQuestTravelTable();
     }
 
     void OnUpdate(uint32 diff) override
@@ -566,14 +567,17 @@ public:
         bgStrategies[bg->GetInstanceID()] = data;
     }
 
-    void OnBattlegroundEnd(Battleground* bg, TeamId /*winnerTeam*/) override { bgStrategies.erase(bg->GetInstanceID()); }
+    void OnBattlegroundEnd(Battleground* bg, TeamId /*winnerTeam*/) override
+    {
+        bgStrategies.erase(bg->GetInstanceID());
+    }
 };
 
 // Workaround for missing InitEnabledHooksIfNeeded for new BattlefieldScript in ScriptMgr
 class PlayerbotsBattlefieldScript : public BattlefieldScript
 {
 public:
-    PlayerbotsBattlefieldScript() : BattlefieldScript("PlayerbotsBattlefieldScript") { }
+    PlayerbotsBattlefieldScript() : BattlefieldScript("PlayerbotsBattlefieldScript") {}
 };
 
 void AddPlayerbotsSecureLoginScripts();

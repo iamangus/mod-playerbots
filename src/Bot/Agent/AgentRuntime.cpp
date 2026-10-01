@@ -419,17 +419,39 @@ TravelDestination* FindQuestDestination(Player* bot, uint32 questId, uint32 obje
         // list; their start points live in the quest-giver relations.
         auto const iterator = TravelMgr::instance().quests.find(questId);
         if (iterator == TravelMgr::instance().quests.end() || !iterator->second)
+        {
+            if (TravelMgr::instance().quests.empty())
+                LOG_ERROR("playerbots.agent",
+                          "navigate_to_quest_giver rejected for bot {}: quest travel table is empty; the "
+                          "quest travel table failed to load or is still building",
+                          bot->GetName().c_str());
+            return nullptr;
+        }
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (!quest)
             return nullptr;
         WorldPosition botPosition(bot);
         TravelDestination* bestDestination = nullptr;
         float bestDistance = std::numeric_limits<float>::max();
         for (TravelDestination* destination : iterator->second->questGivers)
         {
-            if (!destination || !destination->isActive(bot))
+            if (!destination)
                 continue;
-            if (destination->distanceTo(&botPosition) < bestDistance)
+            // Quest-relation destinations gate on legacy party/strategy values
+            // ("can fight equal", "following party") that agent-controlled solo
+            // bots do not maintain. Check the same map and quest-level rules
+            // directly instead; level and availability are validated again by
+            // the accept primitive before any quest is taken.
+            if (destination->getPoints().empty())
+                continue;
+            if (destination->getPoints().front()->GetMapId() != botPosition.GetMapId())
+                continue;
+            if ((int32)quest->GetQuestLevel() >= (int32)bot->GetLevel() + (int32)5)
+                continue;
+            float const distance = destination->distanceTo(&botPosition);
+            if (distance < bestDistance)
             {
-                bestDistance = destination->distanceTo(&botPosition);
+                bestDistance = distance;
                 bestDestination = destination;
             }
         }
