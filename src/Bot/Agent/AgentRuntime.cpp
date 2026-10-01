@@ -79,6 +79,9 @@ constexpr size_t AGENT_MAX_PENDING_COMMANDS = 64;
 constexpr size_t AGENT_MAX_PENDING_EVENTS = 64;
 constexpr uint32 AGENT_HEARTBEAT_MS = 60000;
 constexpr uint32 AGENT_CONTROLLER_TIMEOUT_MS = 90000;
+
+// Most recent controller heartbeat arrival (any shard), world-uptime ms.
+std::atomic<uint32> lastControllerHeartbeatMs{0};
 constexpr uint32 AGENT_MAX_SNAPSHOT_CREATURES = 12;
 constexpr uint32 AGENT_MAX_SNAPSHOT_CORPSES = 12;
 constexpr uint32 AGENT_MAX_SNAPSHOT_GAMEOBJECTS = 12;
@@ -144,7 +147,11 @@ public:
     {
 #if defined(PLAYERBOTS_WITH_TOCLOUD9_SIDECAR)
         if (ownerToken == OwnerToken() && eventShard < AGENT_EVENT_SHARD_COUNT)
-            HeartbeatTimes()[eventShard].store(getMSTime(), std::memory_order_release);
+        {
+            uint32 const now = getMSTime();
+            HeartbeatTimes()[eventShard].store(now, std::memory_order_release);
+            lastControllerHeartbeatMs.store(now, std::memory_order_release);
+        }
 #else
         (void)ownerToken;
         (void)eventShard;
@@ -550,7 +557,6 @@ struct AgentRuntime::Impl
     std::mutex gatheringLocationMutex;
     ObjectGuid gatheringLocationGuid;
     std::string gatheringLocationJson;
-    std::vector<std::string> suppressedLegacyStrategies;
     bool groupInitialized = false;
     bool sendingAgentChat = false;
     uint32 lastGroupMembers = 0;
@@ -663,31 +669,12 @@ struct AgentRuntime::Impl
         {
             if (!botAI->HasStrategy(strategy, BOT_STATE_NON_COMBAT))
                 continue;
-            if (std::find(suppressedLegacyStrategies.begin(), suppressedLegacyStrategies.end(), strategy) ==
-                suppressedLegacyStrategies.end())
-                suppressedLegacyStrategies.push_back(strategy);
             if (!changes.empty())
                 changes += ",";
             changes += "-" + strategy;
         }
         if (!changes.empty())
             botAI->ChangeStrategy(changes, BOT_STATE_NON_COMBAT);
-    }
-
-    void RestoreAutonomousStrategies(PlayerbotAI* botAI)
-    {
-        std::string changes;
-        for (std::string const& strategy : suppressedLegacyStrategies)
-        {
-            if (botAI->HasStrategy(strategy, BOT_STATE_NON_COMBAT))
-                continue;
-            if (!changes.empty())
-                changes += ",";
-            changes += "+" + strategy;
-        }
-        if (!changes.empty())
-            botAI->ChangeStrategy(changes, BOT_STATE_NON_COMBAT);
-        suppressedLegacyStrategies.clear();
     }
 
     bool SetTravelTarget(PlayerbotAI* botAI, TravelDestination* destination, WorldPosition* point)
@@ -3011,6 +2998,12 @@ bool AgentRuntime::IsSupported()
 #endif
 }
 
+bool AgentRuntime::IsControllerPresent()
+{
+    uint32 const last = lastControllerHeartbeatMs.load(std::memory_order_acquire);
+    return last && getMSTimeDiff(last, getMSTime()) < AGENT_CONTROLLER_TIMEOUT_MS;
+}
+
 bool AgentRuntime::IsConfigured(PlayerbotAI* botAI) const
 {
     if (!botAI || !botAI->GetBot() || !sPlayerbotAIConfig.agentBridgeEnabled || !IsSupported())
@@ -3034,11 +3027,9 @@ void AgentRuntime::Stop(PlayerbotAI* botAI)
     m_impl->ClearOperation(botAI);
     if (!botAI->GetBot()->IsInCombat())
         botAI->GetBot()->StopMoving();
-    if (m_impl->remoteControlActive.load(std::memory_order_acquire))
-    {
-        m_impl->RestoreAutonomousStrategies(botAI);
-        m_impl->remoteControlActive.store(false, std::memory_order_release);
-    }
+    // No autonomous strategy restore: bots without a controller log out
+    // instead of falling back to legacy AI.
+    m_impl->remoteControlActive.store(false, std::memory_order_release);
     m_impl->Publish("bot_offline", "", "{}");
     m_impl->stopped = true;
 }
@@ -3175,12 +3166,7 @@ void AgentRuntime::Update(PlayerbotAI* botAI, uint32 elapsed)
         m_impl->lastGroupMembers = groupMembers;
         m_impl->lastGroupLeader = leader;
         if (m_impl->remoteControlActive.load() && botAI->HasStrategy("follow", BOT_STATE_NON_COMBAT))
-        {
-            if (std::find(m_impl->suppressedLegacyStrategies.begin(), m_impl->suppressedLegacyStrategies.end(),
-                          "follow") == m_impl->suppressedLegacyStrategies.end())
-                m_impl->suppressedLegacyStrategies.push_back("follow");
             botAI->ChangeStrategy("-follow", BOT_STATE_NON_COMBAT);
-        }
         m_impl->Publish("group_changed", "",
                         "{\"members\":" + std::to_string(groupMembers) + ",\"leader_guid\":\"" +
                             EscapeJson(AgentBridgeTransport::BotToken(leader)) + "\"}");
@@ -3219,10 +3205,11 @@ void AgentRuntime::Update(PlayerbotAI* botAI, uint32 elapsed)
     }
     else if (!controllerAvailable && remoteControlActive)
     {
+        // Losing the controller never restores autonomous strategies; the bot
+        // idles here and UpdateAIInternal logs it out on its next tick.
         m_impl->ClearOperation(botAI);
         if (!bot->IsInCombat())
             bot->StopMoving();
-        m_impl->RestoreAutonomousStrategies(botAI);
         m_impl->remoteControlActive.store(false, std::memory_order_release);
         m_impl->Publish("agent_control_inactive", "", "{}");
     }

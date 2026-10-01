@@ -20,6 +20,11 @@ The fork's SQL placement, `--author` attribution, and e2e rules do not apply her
   `python apps/codestyle/codestyle-cpp.py` from the module root (the CI check),
   `clang-format --dry-run --Werror <file>` on touched files, and grep the creator
   tables for every new action, trigger, or strategy name.
+- **Every container deployment ends with the clean reset.** After pushing/deploying
+  any ToCloud9 container change, run
+  `/home/angoo/repos/k8s/games/modules/tocloud9/apps/clean-playerbot-state.sh`
+  (see `.agents/docs/deployment.md` for what it wipes and keeps). A deployment is
+  not done until that script ran and all four rollouts completed.
 - Only build inside the custom core,
   [mod-playerbots/azerothcore-wotlk](https://github.com/mod-playerbots/azerothcore-wotlk); upstream
   AzerothCore will not compile this module. Branches pair up: module `test-staging` builds against core `test-staging`, module `master` against core `Playerbot`.
@@ -72,6 +77,8 @@ Read the matching doc(s) BEFORE starting the task:
 - Self-reviewing, or opening or updating a PR → also `.agents/docs/self-review-rules.md`
 - Writing a commit, or opening or updating a PR → `.agents/docs/pull-requests.md`;
   the `pr-title` skill proposes titles, the body is human-authored
+- Deploying or publishing any ToCloud9 container image → `.agents/docs/deployment.md`;
+  always finish a container deployment with the clean-reset script it describes
 - Capturing a lesson or adding/updating agent docs → `.agents/docs/README.md`
 
 ## Repository layout

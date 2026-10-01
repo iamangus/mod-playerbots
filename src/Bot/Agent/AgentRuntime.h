@@ -23,6 +23,10 @@ public:
     ~AgentRuntime();
     static bool IsSupported();
 
+    // True while any agent controller heartbeat for this worldserver is recent.
+    // Externally provisioned populations are only managed while this holds.
+    static bool IsControllerPresent();
+
     AgentRuntime(AgentRuntime const&) = delete;
     AgentRuntime& operator=(AgentRuntime const&) = delete;
 

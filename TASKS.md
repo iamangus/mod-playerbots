@@ -229,16 +229,72 @@ offline-proof regressions; both full race suites and vets pass. Corrected a
 helper's error return to retain nil evidence on directory failure. Go image builds
 started under `local-partial-social-presence`, with logs under
 `/tmp/opencode/partial-social-{controller,charserver}-build.log`.
-These latest changes are not yet committed/published/deployed; native image is
-unchanged. Existing economic blockers, cross-map gathering, and verified road
+Committed/pushed module correction as `d26e4198` and ToCloud9 correction as
+`6610d4c`. Both Go image builds and publication passed. Staged controller
+`sha256:2491832a9c3d79cda302564ec7fa5eba5cee7cf89dfa4280437f5cc62176ea8b`
+at zero replicas and deployed charserver
+`sha256:381a307c05fa9c277ab26ec763f30fe53104167095c668f44627c6a0efef59ac`;
+charserver rollout completed. Saved image pins match. Native image is unchanged.
+Existing economic blockers, cross-map gathering, and verified road
 traces remain unfinished.
 
-**Next:** Commit/publish/deploy partial-presence correction while preserving the
-pause, then implement authoritative ToCloud9 auction/mail handoffs before resuming
-the controller. Continue bot ownership/group/login validation.
+**User directive — no bots without the controller:** The user observed autonomous
+bot activity while the model controller was paused and asked that no bots exist
+without it ("I basically want there to be no bots if the controller isnt there to
+manage them"), and does not want the legacy-AI fallback kept around. Implemented
+(required-controller behavior, not the separate legacy-tree deletion): a 90-second
+controller-heartbeat grace now governs externally provisioned populations. Without
+a recent heartbeat, `RandomPlayerbotMgr` holds all scheduler logins, and each
+online externally provisioned bot (`agentBridgePopulationEnabled` + configured +
+random-bot) logs itself out via the established map-thread logout path instead of
+restoring legacy strategies. Removed `RestoreAutonomousStrategies` and its
+tracking state entirely; controller loss now clears the operation, stops
+movement, publishes `agent_control_inactive`/`bot_offline`, and logs out on the
+bot's next tick. Added `AgentRuntime::IsControllerPresent()` from an O(1) global
+heartbeat stamp. Real players' characters and master-linked bots are unaffected;
+legacy AI still serves non-population deployments (self bots, local setups).
+Documented in `playerbots.conf.dist` and the controller README. Formatting,
+codestyle, and diff whitespace pass; first cached native build hit one remaining
+`suppressedLegacyStrategies` use in the group-changed handler; removed that
+tracking call site (keep the existing `-follow` removal) and rebuilt. The
+required-controller image was published as
+`sha256:18e4395d53b5f0e99894d661dbfe18fd4026bf2a9c71b0d4c626f2e180a1fc5f`,
+deployed, and its `Recreate` rollout completed. Post-rollout observation: zero
+bots online in the characters database and no relogin events while the controller
+stayed paused (the only captured events were in-flight `social_affinity` refreshes
+for pre-restart sessions). Saved core digest matches. Commit/push pending.
+Physical deletion of the legacy AI tree is queued as TASK-012, not mixed into
+this safety change.
+
+**User directive — mandatory clean reset on every container deployment:** The
+user asked for the reset script's location/details to be documented where agents
+read and required it after every container deployment. Documented in
+`.agents/docs/deployment.md` (new; routed from AGENTS.md mandatory reading and
+agent rules) and mirrored in `/home/angoo/repos/k8s/AGENTS.md` deployment
+standards. Ran `clean-playerbot-state.sh` for the just-finished required-controller
+deployment (log: `/tmp/opencode/clean-reset-controller-required.log`); verification
+below. Going forward, every container deployment ends with this script.
+
+**Next:** Verify the reset results, commit/push required-controller work and docs,
+then implement authoritative ToCloud9 auction/mail handoffs
+before resuming the controller. Continue bot ownership/group/login validation.
 Then perform remaining authorized native/live validation and route-data collection.
 Keep cross-map gathering explicitly unfinished. No task is marked
 complete on controller-only evidence.
+
+### TASK-012 — Remove legacy autonomous AI tree (queued)
+
+**Original request:** "I dont want to keep all that old code around. I basically
+want there to be no bots if the controller isnt there to manage them."
+
+**Scope notes:** The behavioral guarantee (no bots without a live controller; no
+legacy-AI fallback for provisioned bots) is implemented under TASK-011. This
+follow-up is the physical cleanup: delete the class/dungeon/raid/world strategy
+tree and unused legacy triggers/values/actions that externally provisioned bots
+never run, while keeping the engine, shared primitives (`Agent*Action`), factory,
+and whatever the agent runtime and local/self-bot deployments still need. Requires
+a full native build plus grep verification that no registered creator/strategy
+consumers remain orphaned per `.agents/docs/ai-engine.md`.
 
 ### TASK-009 — Profession crafting and material dependency loops (in progress)
 

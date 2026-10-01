@@ -551,6 +551,16 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
 
     HandleCommands();
 
+    // Externally provisioned bots exist only while a live agent controller
+    // manages them. Losing it never falls back to legacy AI: log the bot out.
+    if (sPlayerbotAIConfig.agentBridgePopulationEnabled && agentRuntime && agentRuntime->IsConfigured(this) &&
+        !agentRuntime->IsControllerPresent() && sRandomPlayerbotMgr.IsRandomBot(bot))
+    {
+        agentRuntime->Stop(this);
+        sRandomPlayerbotMgr.LogoutPlayerBot(bot->GetGUID());
+        return;
+    }
+
     // logout if logout timer is ready or if instant logout is possible
     if (bot->GetSession()->IsLoggingOut())
     {

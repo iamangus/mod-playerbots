@@ -33,6 +33,13 @@ snapshot includes their results. Ordinary population and zone refills share the
 configured total target; player-triggered cohorts can add characters beyond it.
 Existing characters are preserved when a target is lowered.
 
+With `AiPlayerbot.AgentBridge.Population.Enabled = 1`, bots exist only while a
+live agent controller is connected. A missing or stale controller heartbeat stops
+new scheduler logins, and online externally provisioned bots log out instead of
+falling back to legacy autonomous AI (a 90-second heartbeat grace covers normal
+controller rollouts). Real players' own characters and their master-linked bots
+are unaffected.
+
 ## Decision and priority diagnostics
 
 Controller diagnostics are key/value lines; filter on `bot=<guid>`, then use

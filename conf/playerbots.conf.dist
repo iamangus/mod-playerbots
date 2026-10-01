@@ -2579,6 +2579,9 @@ AiPlayerbot.AgentBridge.MaxMessageLength = 240
 # Enable external bot population management: create_bot_character and
 # population_snapshot bridge commands plus player first-entry events.
 # Requires the agent bridge. Disabled by default.
+# While enabled, bots exist only under a live agent controller: without a
+# recent controller heartbeat no new bots log in and online externally
+# provisioned bots log out instead of falling back to legacy autonomous AI.
 # Default: 0 (disabled)
 AiPlayerbot.AgentBridge.Population.Enabled = 0
 

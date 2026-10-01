@@ -16,6 +16,7 @@
 #include <utility>
 
 #include "AgentPopulation.h"
+#include "AgentRuntime.h"
 #include "AiFactory.h"
 #include "Battleground.h"
 #include "BattlegroundMgr.h"
@@ -336,6 +337,11 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 /*elapsed*/, bool /*minimal*/)
                                                                        ? "RandomPlayerbotMgr::Login"
                                                                        : "RandomPlayerbotMgr::UpdateAIInternal");
 
+    // Externally provisioned populations exist only under a live agent
+    // controller. Without one, hold logins instead of running autonomous bots.
+    bool const controllerManaged =
+        !sPlayerbotAIConfig.agentBridgePopulationEnabled || AgentRuntime::IsControllerPresent();
+
     bool realPlayerIsLogged = false;
     if (sPlayerbotAIConfig.disabledWithoutRealPlayer)
     {
@@ -364,14 +370,14 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 /*elapsed*/, bool /*minimal*/)
             }
         }
 
-        if (availableBotCount < maxAllowedBotCount &&
+        if (controllerManaged && availableBotCount < maxAllowedBotCount &&
             (sPlayerbotAIConfig.disabledWithoutRealPlayer == false ||
              (realPlayerIsLogged && DelayLoginBotsTimer != 0 && time(nullptr) >= DelayLoginBotsTimer)))
         {
             AddRandomBots();
         }
     }
-    else if (availableBotCount < maxAllowedBotCount)
+    else if (controllerManaged && availableBotCount < maxAllowedBotCount)
     {
         AddRandomBots();
     }
@@ -409,7 +415,7 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 /*elapsed*/, bool /*minimal*/)
     }
     uint32 updateBots = sPlayerbotAIConfig.randomBotsPerInterval * onlineBotFocus / 100;
     uint32 maxNewBots =
-        onlineBotCount < maxAllowedBotCount &&
+        controllerManaged && onlineBotCount < maxAllowedBotCount &&
                 (sPlayerbotAIConfig.disabledWithoutRealPlayer == false ||
                  (realPlayerIsLogged && DelayLoginBotsTimer != 0 && time(nullptr) >= DelayLoginBotsTimer))
             ? maxAllowedBotCount - onlineBotCount
