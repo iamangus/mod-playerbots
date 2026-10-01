@@ -7,10 +7,11 @@
 #ifndef PLAYERBOTS_AGENTRUNTIME_H
 #define PLAYERBOTS_AGENTRUNTIME_H
 
-#include "ObjectGuid.h"
 #include <cstdint>
 #include <memory>
 #include <string>
+
+#include "ObjectGuid.h"
 
 class PlayerbotAI;
 class WorldPacket;
@@ -31,14 +32,14 @@ public:
     void Update(PlayerbotAI* botAI, uint32_t elapsed);
     void Stop(PlayerbotAI* botAI);
     void OnChatMessage(PlayerbotAI* botAI, uint8_t type, uint32_t language, ObjectGuid sender,
-                       std::string const& senderName,
-                       std::string const& channel, std::string const& message);
+                       std::string const& senderName, std::string const& channel, std::string const& message);
     void OnGroupInvite(PlayerbotAI* botAI, WorldPacket const& packet);
     void OnTradeStatus(PlayerbotAI* botAI, WorldPacket const& packet);
     uint64 GetTradeRevision() const;
     void OnTradeOperationResult(std::string const& requestId, std::string const& operationId,
                                 std::string const& operation, bool success);
     void OnQuestProgress(PlayerbotAI* botAI, uint32_t opcode);
+    void OnStrategiesReset(PlayerbotAI* botAI);
 
 private:
     struct Impl;

@@ -128,7 +128,8 @@ bool MoveToTravelTargetAction::isUseful()
     if (!botAI->AllowActivity(TRAVEL_ACTIVITY))
         return false;
 
-    if (!context->GetValue<TravelTarget*>("travel target")->Get()->isTraveling())
+    TravelTarget* target = context->GetValue<TravelTarget*>("travel target")->Get();
+    if (!target || !target->isTraveling())
         return false;
 
     if (bot->HasUnitState(UNIT_STATE_IN_FLIGHT))
@@ -140,15 +141,19 @@ bool MoveToTravelTargetAction::isUseful()
     if (bot->isMoving())
         return false;
 
-    if (!AI_VALUE(bool, "can move around"))
+    // Forced travel is an explicit order, not autonomous RPG roaming. Keep
+    // physical movement/trade/combat guards, but do not leash it to a leader.
+    if (target->isForced() && (!botAI->CanMove() || bot->IsInCombat() || bot->GetTradeData()))
+        return false;
+
+    if (!target->isForced() && !AI_VALUE(bool, "can move around"))
         return false;
 
     LootObject loot = AI_VALUE(LootObject, "loot target");
     if (loot.IsLootPossible(bot))
         return false;
 
-    if (!ChooseRpgTargetAction::isFollowValid(bot,
-                                              *context->GetValue<TravelTarget*>("travel target")->Get()->getPosition()))
+    if (!target->isForced() && !ChooseRpgTargetAction::isFollowValid(bot, *target->getPosition()))
         return false;
 
     return true;

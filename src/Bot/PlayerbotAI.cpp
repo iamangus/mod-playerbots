@@ -487,6 +487,11 @@ void PlayerbotAI::UpdateAIGroupMaster()
             botAI->SetMaster(newMaster);
             botAI->ResetStrategies();
 
+            // Grouping must not replace externally selected tasks with an
+            // autonomous follow loop. The agent decides whether to lead/follow.
+            if (agentRuntime && agentRuntime->IsEnabled(this))
+                return;
+
             if (!bot->InBattleground())
             {
                 botAI->ChangeStrategy("+follow", BOT_STATE_NON_COMBAT);
@@ -1986,6 +1991,9 @@ void PlayerbotAI::ResetStrategies(bool /*load*/)
 
     for (uint8 i = 0; i < BOT_STATE_MAX; i++)
         engines[i]->Init();
+
+    if (agentRuntime)
+        agentRuntime->OnStrategiesReset(this);
 
     // if (load)
     //     PlayerbotRepository::instance().Load(this);

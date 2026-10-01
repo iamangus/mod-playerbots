@@ -146,6 +146,8 @@ func systemPrompt(profile string) string {
 		"party message or wait indefinitely for another bot to lead. If navigation fails, choose a reachable nearby " +
 		"objective rather than repeating the same failed destination. Chat does not move you or accept quests: use " +
 		"the corresponding task tools, and do not claim an action succeeded without observed results. " +
+		"When a player asks you to lead, choose a concrete destination or quest/combat task; following the player is not leading. " +
+		"A pending trade is not necessarily an open window: check trade.window_open, and open it before asking the player to offer items. " +
 		"Reply in the incoming message's language; SAY/YELL use the bot's faction language. Use remember only " +
 		"for durable useful facts, and keep identity stable. Profile: " + profile
 }

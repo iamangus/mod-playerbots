@@ -42,6 +42,7 @@ namespace boost::property_tree::json_parser::detail
 #include "boost/property_tree/json_parser.hpp"
 #include "boost/property_tree/ptree.hpp"
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -433,6 +434,7 @@ struct AgentRuntime::Impl
     bool addedTravelStrategy = false;
     bool invitePending = false;
     std::atomic<uint64> tradeRevision{0};
+    std::atomic<bool> tradeWindowOpen{false};
     bool tradeMovementSuspended = false;
     WorldPacket invitePacket;
     std::mutex inviteMutex;
@@ -541,7 +543,8 @@ struct AgentRuntime::Impl
         {
             if (!botAI->HasStrategy(strategy, BOT_STATE_NON_COMBAT))
                 continue;
-            if (!remoteControlActive.load(std::memory_order_acquire))
+            if (std::find(suppressedLegacyStrategies.begin(), suppressedLegacyStrategies.end(), strategy) ==
+                suppressedLegacyStrategies.end())
                 suppressedLegacyStrategies.push_back(strategy);
             if (!changes.empty())
                 changes += ",";
@@ -717,7 +720,8 @@ struct AgentRuntime::Impl
             }
         result << "]}";
 
-        result << ",\"trade\":{\"revision\":" << tradeRevision.load();
+        result << ",\"trade\":{\"revision\":" << tradeRevision.load()
+               << ",\"window_open\":" << (bot->GetTradeData() && tradeWindowOpen.load() ? "true" : "false");
         if (TradeData* trade = bot->GetTradeData())
         {
             Player* partner = bot->GetTrader();
@@ -1149,7 +1153,7 @@ struct AgentRuntime::Impl
                 bool const valid = target && target->IsInWorld() && target->IsAlive() &&
                                    botAI->GetBot()->IsValidAttackTarget(target);
                 bool const moved = valid && botAI->DoSpecificAction(
-                    "agent move to target", Event("agent move to target", targetGuid), true);
+                    "agent move to target", Event("agent approach target", targetGuid), true);
                 PublishResult(command.requestId, command.operationId, command.operation,
                               moved ? "accepted" : "rejected",
                               moved ? "approaching combat target" : "combat target approach unavailable", targetGuid);
@@ -1368,6 +1372,15 @@ void AgentRuntime::OnQuestProgress(PlayerbotAI* botAI, uint32 opcode)
 
 uint64 AgentRuntime::GetTradeRevision() const { return m_impl->tradeRevision.load(); }
 
+void AgentRuntime::OnStrategiesReset(PlayerbotAI* botAI)
+{
+    if (!IsEnabled(botAI))
+        return;
+    m_impl->SuppressAutonomousStrategies(botAI);
+    if (m_impl->addedTravelStrategy)
+        botAI->ChangeStrategy("+travel", BOT_STATE_NON_COMBAT);
+}
+
 void AgentRuntime::OnTradeOperationResult(std::string const& requestId, std::string const& operationId,
                                           std::string const& operation, bool success)
 {
@@ -1388,7 +1401,23 @@ void AgentRuntime::OnTradeStatus(PlayerbotAI* botAI, WorldPacket const& packet)
     copy.rpos(0);
     uint32 status = 0;
     if (packet.GetOpcode() == SMSG_TRADE_STATUS)
+    {
         copy >> status;
+        if (status == TRADE_STATUS_OPEN_WINDOW)
+            m_impl->tradeWindowOpen.store(true);
+        else if (status == TRADE_STATUS_BEGIN_TRADE)
+        {
+            m_impl->tradeWindowOpen.store(false);
+            Player* bot = botAI->GetBot();
+            if (Player* partner = bot->GetTrader())
+                PlayerbotWorldThreadProcessor::instance().QueueOperation(std::make_unique<AgentTradeOperation>(
+                    bot->GetGUID(), partner->GetGUID(), m_impl->tradeRevision.load(), "begin_trade", 0, 0,
+                    ObjectGuid::Empty, "trade-open-" + std::to_string(m_impl->tradeRevision.load()), ""));
+        }
+        else if (status == TRADE_STATUS_TRADE_CANCELED || status == TRADE_STATUS_TRADE_COMPLETE ||
+                 status == TRADE_STATUS_CLOSE_WINDOW || status == TRADE_STATUS_TRADE_REJECTED)
+            m_impl->tradeWindowOpen.store(false);
+    }
     m_impl->Publish("trade_updated", "", "{\"status\":" + std::to_string(status) + "}");
 }
 
@@ -1431,6 +1460,13 @@ void AgentRuntime::Update(PlayerbotAI* botAI, uint32 elapsed)
     {
         m_impl->lastGroupMembers = groupMembers;
         m_impl->lastGroupLeader = leader;
+        if (m_impl->remoteControlActive.load() && botAI->HasStrategy("follow", BOT_STATE_NON_COMBAT))
+        {
+            if (std::find(m_impl->suppressedLegacyStrategies.begin(), m_impl->suppressedLegacyStrategies.end(),
+                          "follow") == m_impl->suppressedLegacyStrategies.end())
+                m_impl->suppressedLegacyStrategies.push_back("follow");
+            botAI->ChangeStrategy("-follow", BOT_STATE_NON_COMBAT);
+        }
         m_impl->Publish("group_changed", "", "{\"members\":" + std::to_string(groupMembers) +
                         ",\"leader_guid\":\"" + EscapeJson(AgentBridgeTransport::BotToken(leader)) + "\"}");
     }
