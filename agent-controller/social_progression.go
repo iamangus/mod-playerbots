@@ -9,12 +9,13 @@ import (
 const socialPresenceAge = 3 * time.Minute
 
 type humanAffinity struct {
-	GUID   uint64 `json:"guid"`
-	Name   string `json:"name"`
-	Online bool   `json:"online"`
-	Level  uint32 `json:"level"`
-	Zone   uint32 `json:"zone_id"`
-	Map    uint32 `json:"map_id"`
+	GUID          uint64 `json:"guid"`
+	Name          string `json:"name"`
+	Online        bool   `json:"online"`
+	PresenceKnown bool   `json:"presence_known"`
+	Level         uint32 `json:"level"`
+	Zone          uint32 `json:"zone_id"`
+	Map           uint32 `json:"map_id"`
 }
 
 type socialAffinities struct {
@@ -52,7 +53,7 @@ func (a *actor) observeSocialAffinities(incoming event) {
 	}
 	allOffline := len(observation.Friends) > 0
 	for _, friend := range observation.Friends {
-		if friend.Online {
+		if friend.Online || !friend.PresenceKnown {
 			allOffline = false
 			break
 		}
@@ -107,6 +108,12 @@ func (a *actor) socialPolicy(now time.Time) *socialProgressionPolicy {
 		}
 	}
 	if policy.Friend == nil {
+		for _, friend := range friends {
+			if !friend.PresenceKnown {
+				policy.Presence = "unknown"
+				return policy
+			}
+		}
 		grace := a.owner.cfg.socialOfflineGrace
 		if grace < time.Minute {
 			grace = 10 * time.Minute

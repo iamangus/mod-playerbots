@@ -111,9 +111,26 @@ codestyle and diff whitespace pass. The cached retry succeeded, logged at
 `/tmp/opencode/acquisition-social-core-build-retry.log`; custom-core worldserver
 compilation/link/install passed (local final image ID `184cb04bca81`). Final
 controller race tests (five runs), full charserver race tests, both Go vets,
-C++ codestyle and diff whitespace pass. Native gameplay is still unverified. Commits, registry
-publication, deployment, and live behavior remain pending. No state resets or
+C++ codestyle and diff whitespace pass. Committed module/controller work as
+`e84917c1`; pre-existing `azerothcore-wotlk/` was excluded. Published the first
+three images by digest: core `sha256:4ca9981896082266430fb1d23a276f1528eb5f2387aaabfc8c8f45c2d889dc11`,
+controller `sha256:2eab478e6d86ba7e93b32f9a05847b01539e1115e1ee67c64fa4ef55183e651a`,
+charserver `sha256:ef07b8136e48f66a5a16de2dfe8cc74b1e921882d80fec43d3c66b92c634ec2b`.
+Native gameplay and deployment remain unverified/pending; no state resets or
 live model requests occurred.
+
+**Pre-deployment review finding:** Charserver's in-memory directory is empty
+after restart; absence alone cannot prove a human logout. Added explicit
+`presence_known`, bounded human gateway logout tracking, and login clearing;
+unobserved presence stays unknown and cannot start offline XP gating. Added a
+restart/logout/login regression and controller unknown-presence checks. Full
+controller race suite (five runs), full charserver race tests and both vets pass.
+Controller/charserver images must be rebuilt/published with this correction before
+deploying; do not use their first digests above. Core image is unchanged.
+Existing core/charserver deployments use rolling surge despite in-memory bot
+ownership. Added opt-in `Recreate` chart strategy to avoid overlapping schedulers
+and social listeners when playerbot integration is enabled; Helm lint passes.
+Unrelated ToCloud9/Kubernetes working changes remain local and must be preserved.
 
 **Next:** Resolve compilation findings, review/commit, publish/deploy while preserving
 the pause, then perform authorized native/live validation and route-data collection.

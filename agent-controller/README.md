@@ -74,6 +74,9 @@ uses human-owned friend-list entries and the live gateway directory. Friendships
 remain durable in the ordinary character social table; stale presence (three
 minutes) and directory failures are unknown, never inferred logouts. Unfriend
 removes steering. Multiple friends use stable online selection, not proximity.
+An absent directory entry after charserver restart is also unknown. Confirmed
+offline presence requires an observed human gateway logout; a login clears it
+before directory reconciliation. No saved database online flag is substituted.
 
 Decision state includes `social_progression`: level pacing within two levels,
 normal catch-up when behind, and preference for the friend's general region.

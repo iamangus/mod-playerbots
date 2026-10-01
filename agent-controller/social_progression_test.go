@@ -68,7 +68,7 @@ func TestSocialOfflineGraceRequiresContinuousFreshEvidence(t *testing.T) {
 	a.owner.cfg.socialProgression, a.owner.cfg.socialRealm = true, 1
 	a.owner.cfg.socialOfflineGrace = 10 * time.Minute
 	now := time.Now()
-	a.state.SocialAffinities = &socialAffinities{Realm: 1, ObservedAt: now.UnixMilli(), Friends: []humanAffinity{{GUID: 10}}}
+	a.state.SocialAffinities = &socialAffinities{Realm: 1, ObservedAt: now.UnixMilli(), Friends: []humanAffinity{{GUID: 10, PresenceKnown: true}}}
 	a.state.SocialOfflineSince = now.Add(-9 * time.Minute).UnixMilli()
 	if !a.socialToolAllowed("kill_count") {
 		t.Fatal("grace period blocked independent work")
@@ -86,13 +86,18 @@ func TestSocialOfflineGraceRequiresContinuousFreshEvidence(t *testing.T) {
 	if !a.socialToolAllowed("kill_count") {
 		t.Fatal("stale evidence inferred logout")
 	}
-	a.observeSocialAffinities(event{Timestamp: now.UnixMilli(), Payload: mustJSON(socialAffinities{Realm: 1, Friends: []humanAffinity{{GUID: 10}}})})
+	a.observeSocialAffinities(event{Timestamp: now.UnixMilli(), Payload: mustJSON(socialAffinities{Realm: 1, Friends: []humanAffinity{{GUID: 10, PresenceKnown: true}}})})
 	if a.state.SocialOfflineSince != now.UnixMilli() || !a.socialToolAllowed("kill_count") {
 		t.Fatal("unknown presence gap falsely counted as confirmed offline time")
 	}
 	var restored persistedAgent
 	if err := json.Unmarshal(mustJSON(a.state), &restored); err != nil || restored.SocialOfflineSince != a.state.SocialOfflineSince {
 		t.Fatal("offline grace lost on restart")
+	}
+	a.state.SocialAffinities.Friends[0].PresenceKnown = false
+	a.state.SocialOfflineSince = now.Add(-time.Hour).UnixMilli()
+	if a.socialPolicy(now).Presence != "unknown" || !a.socialToolAllowed("kill_count") {
+		t.Fatal("unobserved directory entry became confirmed offline pacing")
 	}
 }
 
