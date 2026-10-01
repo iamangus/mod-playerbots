@@ -19,6 +19,7 @@ type humanAffinity struct {
 }
 
 type socialAffinities struct {
+	Partial    bool            `json:"partial,omitempty"`
 	Realm      uint32          `json:"realm_id"`
 	Friends    []humanAffinity `json:"friends"`
 	ObservedAt int64           `json:"observed_at"`
@@ -51,7 +52,7 @@ func (a *actor) observeSocialAffinities(incoming event) {
 		}
 		seen[friend.GUID] = true
 	}
-	allOffline := len(observation.Friends) > 0
+	allOffline := len(observation.Friends) > 0 && !observation.Partial
 	for _, friend := range observation.Friends {
 		if friend.Online || !friend.PresenceKnown {
 			allOffline = false
@@ -108,6 +109,10 @@ func (a *actor) socialPolicy(now time.Time) *socialProgressionPolicy {
 		}
 	}
 	if policy.Friend == nil {
+		if a.state.SocialAffinities.Partial {
+			policy.Presence = "unknown"
+			return policy
+		}
 		for _, friend := range friends {
 			if !friend.PresenceKnown {
 				policy.Presence = "unknown"

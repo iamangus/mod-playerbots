@@ -193,8 +193,15 @@ pass; cached compilation and publication passed at
 `sha256:6731ab7a1df0c6cb9dc02a986c315ef66ebd3a6449534c50ff6317d1c595d2ae`.
 Core rollout completed; saved image digest matches. Observed twenty native
 online/heartbeat events from ten distinct bots, but no reconstruction snapshots
-in that bounded sample. Social-session reconstruction is still unproven; tracing
-charserver request dispatch next. Controller is confirmed at zero replicas.
+in that first bounded sample. Later inspection found 27 registered social-session
+identities in charserver logs. A 50-event sample contains session-ready signals
+from 22 distinct bots and an owner/request-correlated read-only native snapshot
+for Ahosera (level 1). No controller heartbeat/model call was sent; controller
+remains at zero replicas. This establishes passive reconstruction, not full
+restart/group consistency or the 80-bot cohort. Core/charserver remain ready.
+Committed passive snapshots as `812044cf`; module commits through it are pushed
+to the iamangus fork. An attempted push to upstream was permission-denied; no
+upstream changes occurred.
 
 **Pause-aware chart publication:** Committed scoped ToCloud9 social/chart work as
 `5f2dc6c`, preserving unrelated local Dockerfile/build notes. Published chart-v0.2.5
@@ -212,10 +219,23 @@ effects. The bot handoff needs durable service receipts and idempotent native
 mutation/reconciliation; no human gateway behavior was modified. Details are in
 the local cluster-economy bridge analysis. Economic flows remain blocked.
 
-**Next:** Verify passive social reconstruction
-with no controller/model activity, verify bot
-ownership/login state, implement authoritative ToCloud9 auction/mail handoffs,
-before resuming the controller.
+**Partial social evidence correction:** Bounded friend projection previously
+selected the first eight GUIDs, which could omit an online ninth friend and
+mistake partial offline evidence for everyone offline. Added online-first stable
+ordering, explicit projection `partial`, and conservative unknown policy when
+no online friend is observed in a partial list. Partial evidence clears offline
+grace rather than accumulating it. Added charserver projection and controller
+offline-proof regressions; both full race suites and vets pass. Corrected a
+helper's error return to retain nil evidence on directory failure. Go image builds
+started under `local-partial-social-presence`, with logs under
+`/tmp/opencode/partial-social-{controller,charserver}-build.log`.
+These latest changes are not yet committed/published/deployed; native image is
+unchanged. Existing economic blockers, cross-map gathering, and verified road
+traces remain unfinished.
+
+**Next:** Commit/publish/deploy partial-presence correction while preserving the
+pause, then implement authoritative ToCloud9 auction/mail handoffs before resuming
+the controller. Continue bot ownership/group/login validation.
 Then perform remaining authorized native/live validation and route-data collection.
 Keep cross-map gathering explicitly unfinished. No task is marked
 complete on controller-only evidence.

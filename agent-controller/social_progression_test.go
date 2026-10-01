@@ -113,3 +113,18 @@ func TestSocialPresenceHeartbeatDoesNotInvalidateDecision(t *testing.T) {
 		t.Fatal("unchanged friendship heartbeat invalidated an in-flight decision")
 	}
 }
+
+func TestPartialFriendProjectionCannotProveEveryoneOffline(t *testing.T) {
+	a, _ := craftingActor(t)
+	a.owner.cfg.socialProgression, a.owner.cfg.socialRealm = true, 1
+	now := time.Now()
+	a.state.SocialAffinities = &socialAffinities{Realm: 1, Partial: true, ObservedAt: now.UnixMilli(), Friends: []humanAffinity{{GUID: 10, PresenceKnown: true}}}
+	a.state.SocialOfflineSince = now.Add(-time.Hour).UnixMilli()
+	if a.socialPolicy(now).Presence != "unknown" || !a.socialToolAllowed("kill_count") {
+		t.Fatal("truncated list inferred all friends offline")
+	}
+	a.observeSocialAffinities(event{Timestamp: now.Add(time.Millisecond).UnixMilli(), Payload: mustJSON(*a.state.SocialAffinities)})
+	if a.state.SocialOfflineSince != 0 {
+		t.Fatal("partial evidence preserved confirmed offline grace")
+	}
+}
