@@ -404,14 +404,35 @@ controller repeatedly chose the same rejected NPC. Persist rejected receiver
 GUIDs, skip them, and terminate when candidates are exhausted instead of
 restarting navigation. Four regressions cover retry arrival, accepted/rejected
 failure bounds, receiver rejection after serialization, and exhausted receivers.
-Full race suite (three runs) and vet pass. Controller image building under
-`local-bounded-quest-retries`. Persisted `Logger.playerbots=4,Console Server`
+Full race suite (three runs) and vet pass. Controller fixes committed/pushed as
+`96415dc2`; published/deployed image `a80340ab…` under
+`local-bounded-quest-retries`, matching saved values. Mandatory clean reset
+completed all four rollouts (`/tmp/opencode/clean-reset-bounded-quest-retries.log`).
+All four affected pods are ready with zero restarts at inspection.
+Persisted `Logger.playerbots=4,Console Server`
 in saved `files/worldserver.conf`; no blanket configuration apply performed.
 Item-only quest objectives still explicitly block; unsupported acquisition and
 cohort-wide movement/social pacing remain open.
 
-**Next:** Publish/deploy retry fixes, mandatory reset, capture fresh movement and
-quest outcomes; continue TASK-011 validation without claiming universal success.
+**Post-deploy live evidence:** Controller window 20:44:57–20:48:19 contains nine
+completed accepts and one completed quest turn-in, 14 giver navigations, five
+turn-in navigations, and two turn-in interactions (no previous command storm in
+this window). Native snapshot observations span 119.7 seconds across 52 bots:
+five were observed moving, eight changed position by more than one yard, and
+four gained XP without changing level. Examples: Rallion displaced 374 yards;
+Tagdos displaced 93 yards and gained 220 XP; Boasmio displaced 101 yards and
+gained 106 XP. Displacement alone can include resurrection/teleporting, so it is
+not treated as walking proof for every bot. DB later shows ten rewarded quests
+across ten bots and 64 bots at levels 2–4. Capture/report artifacts:
+`/tmp/opencode/bounded-retries-live-{window.log,events.jsonl,report.json}`.
+Remaining blocked outcomes: two item-only objectives, two quest destinations,
+four dead/off-map destination tasks, one unavailable named destination, and one
+local-search path failure. This is partial progression, not universal recovery
+or completed level-80/acquisition/social validation.
+
+**Next:** Trace the unavailable quest/objective destinations and unsupported
+item-source quests; continue TASK-011 group/social validation and observe longer
+cohort progression without claiming universal success.
 
 ### TASK-012 — Remove legacy autonomous AI tree (queued)
 
@@ -558,23 +579,6 @@ checks are limited to once per minute per bid; empty mail retains pending escrow
 **Remaining:** Native gameplay verification. Tests/checks are recorded under TASK-011;
 live testing/token spending remain paused until its step 4. Neither entry is marked complete.
 
-### TASK-005 — Human bot class diversity (in progress)
-
-**Original request:** "also every human bot was Paladin. please figure out the diversity thing"
-
-**Investigation:** Starter-zone allocation selects classes using realm-wide class
-counts, not the distribution within the selected race. A globally underrepresented
-class can therefore monopolize a race-specific cohort. Preserve race/class joint
-counts already supplied by the population snapshot and use them for zone-restricted
-class allocation. Verify with a deliberately skewed realm regression case; this is
-not yet proof of the live population's complete causal history.
-
-**Local outcome:** Joint race/class counts are retained through snapshots and
-pending reservations; starter cohorts use conditional class weights rather than
-global deficits. Three regression tests cover skewed human cohorts, weighted class
-selection, and aggregation across level bands. Already-created paladins are not
-changed. Live causal confirmation and new-cohort observation remain paused.
-
 ### TASK-006 — Vendor and trainer loops (in progress)
 
 **Request:** Continue TASK-001, ranked items 3 and 4.
@@ -680,9 +684,27 @@ state and unpredictable interruptions are hard. New loops are expected and norma
 
 ## Completed
 
-### TASK-008 — Decision and priority diagnostics (done — local, not deployed)
+### TASK-005 — Human bot class diversity (done)
+
+**Original request:** "also every human bot was Paladin. please figure out the diversity thing"
+
+**Outcome:** Starter cohorts use conditional race/class weights and retain joint
+counts through snapshots/reservations. Three local regressions cover skewed human
+cohorts, weighted selection, and level-band aggregation. With explicit user
+authorization, all 360 old bots were deleted and the cohort rebuilt; Peepee was
+preserved. Database verification on 2026-10-01 confirms 100 new bots across all
+nine classes: Warrior/Rogue 12 each, Druid 10, all others 11 each. The ten human
+bots include Warrior 1, Paladin 2, Rogue 2, Priest 1, Mage 1, and Warlock 3.
+Diversity is verified; cohort progression/stability remains under TASK-011.
+
+### TASK-008 — Decision and priority diagnostics (done — deployed)
 
 **Original request:** "please make sure we have good logging so we know when bots are facing decisioning or priority issues."
+
+**Live verification:** Deployed controller diagnostics exposed the retry storms
+under TASK-011 with task/operation IDs and phases. Native playerbots logging is
+enabled live and now retained in saved `files/worldserver.conf` too. Log rotation
+can truncate large `--since` samples; bounded follow captures were used instead.
 
 **Outcome:** Correlation IDs join queued decisions to results; traces include event
 delivery delay, queue/model time, revisions/stale results, selected/rejected tools,
