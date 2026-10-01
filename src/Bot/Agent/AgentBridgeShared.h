@@ -7,8 +7,9 @@
 #ifndef PLAYERBOTS_AGENTBRIDGESHARED_H
 #define PLAYERBOTS_AGENTBRIDGESHARED_H
 
-#include "Common.h"
 #include <string>
+
+#include "Common.h"
 
 namespace agent_bridge
 {
@@ -16,6 +17,10 @@ using MessageHandler = void (*)(char const* subject, char const* payload, int pa
 
 // True when the module was built with ToCloud9's libsidecar integration.
 bool SidecarSupported();
+
+// Legacy economic handlers cannot mutate service-owned cluster auction/mail state.
+// Without an authoritative mode check, sidecar builds fail closed.
+bool ClusterEconomyServiceOwned();
 
 // Stable token for this worldserver instance (TC9_PREFERRED_HOSTNAME or HOSTNAME).
 std::string OwnerToken();
@@ -31,6 +36,6 @@ bool Publish(std::string const& subject, std::string const& payload);
 
 std::string EscapeJson(std::string const& value);
 std::string TruncateUtf8(std::string value, size_t maxBytes);
-}
+}  // namespace agent_bridge
 
 #endif

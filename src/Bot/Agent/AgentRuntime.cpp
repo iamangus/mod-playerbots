@@ -2270,6 +2270,16 @@ struct AgentRuntime::Impl
             return;
         }
 
+        if (agent_bridge::ClusterEconomyServiceOwned() &&
+            (command.operation == "inspect_auctions" || command.operation == "buy_auction" ||
+             command.operation == "bid_auction" || command.operation == "collect_mail" ||
+             command.operation == "send_mail"))
+        {
+            PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                          "cluster auction/mail authority requires a service handoff; legacy handlers are disabled");
+            return;
+        }
+
         auto cachedResult = resultCache.find(command.requestId);
         if (!command.requestId.empty() && cachedResult != resultCache.end())
         {

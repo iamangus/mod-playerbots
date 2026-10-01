@@ -5,9 +5,13 @@
  */
 
 #include "AgentBridgeShared.h"
+
 #include "Log.h"
 #if defined(PLAYERBOTS_WITH_TOCLOUD9_SIDECAR)
 #include "libsidecar.h"
+#if __has_include("TC9Sidecar.h")
+#include "TC9Sidecar.h"
+#endif
 #endif
 #include <cctype>
 #include <cstdlib>
@@ -38,6 +42,17 @@ std::string OwnerToken()
             character = '_';
     }
     return token;
+}
+
+bool ClusterEconomyServiceOwned()
+{
+#if defined(PLAYERBOTS_WITH_TOCLOUD9_SIDECAR) && __has_include("TC9Sidecar.h")
+    return sToCloud9Sidecar->ClusterModeEnabled();
+#elif defined(PLAYERBOTS_WITH_TOCLOUD9_SIDECAR)
+    return true;
+#else
+    return false;
+#endif
 }
 
 uint32 EventShard(std::string const& botToken)
@@ -90,13 +105,27 @@ std::string EscapeJson(std::string const& value)
     {
         switch (character)
         {
-            case '"': out << "\\\""; break;
-            case '\\': out << "\\\\"; break;
-            case '\b': out << "\\b"; break;
-            case '\f': out << "\\f"; break;
-            case '\n': out << "\\n"; break;
-            case '\r': out << "\\r"; break;
-            case '\t': out << "\\t"; break;
+            case '"':
+                out << "\\\"";
+                break;
+            case '\\':
+                out << "\\\\";
+                break;
+            case '\b':
+                out << "\\b";
+                break;
+            case '\f':
+                out << "\\f";
+                break;
+            case '\n':
+                out << "\\n";
+                break;
+            case '\r':
+                out << "\\r";
+                break;
+            case '\t':
+                out << "\\t";
+                break;
             default:
                 if (character < 0x20)
                     out << "\\u00" << std::hex << static_cast<uint32>(character) << std::dec;
@@ -113,10 +142,9 @@ std::string TruncateUtf8(std::string value, size_t maxBytes)
         return value;
 
     size_t end = maxBytes;
-    while (end > 0 && end < value.size() &&
-           (static_cast<unsigned char>(value[end]) & 0xC0) == 0x80)
+    while (end > 0 && end < value.size() && (static_cast<unsigned char>(value[end]) & 0xC0) == 0x80)
         --end;
     value.resize(end);
     return value;
 }
-}
+}  // namespace agent_bridge

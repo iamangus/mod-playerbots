@@ -162,8 +162,25 @@ Terraform release is still pinned to chart 0.2.4, which ignores the new switch;
 documented that applying that old chart would resume the controller. Updated
 chart publication/pinning remains outstanding; no blanket Helm/Tofu apply occurred.
 
-**Next:** Resolve compilation findings, review/commit, publish/deploy while preserving
-the pause, then perform authorized native/live validation and route-data collection.
+**Economic authority blocker:** Verified gateway auction requests call
+`auctionHouseServiceClient`, and mail requests call `mailServiceClient`, whereas
+new native bot operations call legacy core handlers/caches. That bypasses the
+cluster service authority and cannot safely be validated by local cache receipts.
+Added a fail-closed runtime guard rejecting legacy auction inspection/buy/bid and
+mail collection/sending in cluster mode (unknown sidecar mode also fails closed).
+The authoritative service handoff/receipt integration must be completed before
+those flows run in this cluster. Keep the controller paused; do not spend live
+money or claim acquisition finished. Standalone algorithm tests remain useful
+but do not prove ToCloud9 economic correctness.
+Startup account restoration was committed as `a58b8cb7` and its native build
+passed, but was not deployed: the next image must also contain this authority
+guard and first-start-only restoration (to avoid changing account vectors on
+config reload). Formatting/codestyle pass; the combined safe image is pending.
+
+**Next:** Build/deploy the combined restart/authority safety fixes, verify bot
+ownership/login state, implement authoritative ToCloud9 auction/mail handoffs,
+and publish/pin the updated pause-aware chart before resuming the controller.
+Then perform remaining authorized native/live validation and route-data collection.
 Keep cross-map gathering explicitly unfinished. No task is marked
 complete on controller-only evidence.
 

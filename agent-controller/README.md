@@ -114,6 +114,20 @@ ten-minute corridor cooldown. Without a matching verified corridor (or with the
 option off), ordinary navigation is unchanged. Curated route data and native
 in-game verification remain outstanding; this is not a global road classifier.
 
+## Cluster auction/mail authority
+
+ToCloud9 gateways route auction and mail requests through dedicated services, not
+the legacy worldserver auction/mail handlers. Native bot commands must use that
+same authority. The safety guard rejects legacy `inspect_auctions`, `buy_auction`,
+`bid_auction`, `collect_mail`, and `send_mail` in cluster mode (and fails closed
+when a sidecar build cannot establish its mode).
+
+The native auction/mail implementations described below are therefore not yet
+usable in this cluster: their service handoff and authoritative receipts remain
+unfinished. Controller planning tests and a successful C++ build do not prove
+cluster economic correctness. Do not enable those flows or treat local auction
+cache revalidation as proof of the live service book.
+
 ## Crafting hierarchy
 
 `craft_item` creates a persisted dependency plan for additional output. Known
