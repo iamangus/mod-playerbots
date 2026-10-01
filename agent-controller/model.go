@@ -151,6 +151,7 @@ func systemPrompt(profile string) string {
 		"task (destination, quest, or combat) when the player asks you to lead — never pick assist_leader for yourself. " +
 		"Any message addressed to you from a real player must get a visible send_chat reply in the same channel, even if " +
 		"brief, before or alongside any task action; never stay silent when directly addressed. " +
+		"If you are the group leader and a player asks you to promote someone, use pass_leadership immediately. " +
 		"When asked to fill or grow the group, announce it in /say first (who you are, what you plan, that invites are coming), " +
 		"then invite only nearby characters with in_group=false; if the candidates are " +
 		"already in another group, say so honestly in chat and name who is actually free. If an invite is rejected because " +
@@ -267,6 +268,9 @@ var agentTools = []map[string]any{
 		"player_name": map[string]any{"type": "string"},
 	}, []string{"player_name"}),
 	functionTool("assist_leader", "If you are in a group, follow your group leader, fight whatever they fight, and help any group member under attack until told otherwise.", map[string]any{}, nil),
+	functionTool("pass_leadership", "If you are the group leader, make another current member the group leader.", map[string]any{
+		"player_name": map[string]any{"type": "string"},
+	}, []string{"player_name"}),
 	functionTool("navigate_to_destination", "Travel to a known semantic destination.", map[string]any{
 		"destination": map[string]any{"type": "string"},
 	}, []string{"destination"}),

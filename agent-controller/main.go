@@ -1131,6 +1131,8 @@ func (a *actor) applyTool(call toolCall) {
 		a.startPlayerNavigationTask(call.Name, args)
 	case "assist_leader":
 		a.startAssistLeaderTask()
+	case "pass_leadership":
+		a.sendPrimitive("change_group_leader", rawMapToAny(args))
 	case "navigate_to_destination":
 		a.startDestinationTask(args)
 	case "work_on_quest":

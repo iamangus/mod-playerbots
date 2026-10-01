@@ -1329,6 +1329,24 @@ struct AgentRuntime::Impl
                 StartOperation(botAI, command);
                 return;
             }
+            if (command.operation == "change_group_leader")
+            {
+                Player* bot = botAI->GetBot();
+                Group* group = bot->GetGroup();
+                Player* target = ObjectAccessor::FindPlayerByName(GetString(arguments, "player_name"));
+                if (!group || !group->IsLeader(bot->GetGUID()) || !target || target->GetGroup() != group ||
+                    target == bot)
+                {
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "you must be the group leader and the target must be a member");
+                    return;
+                }
+                group->ChangeLeader(target->GetGUID());
+                group->SendUpdate();
+                PublishResult(command.requestId, command.operationId, command.operation, "completed",
+                              "leadership transferred", target->GetGUID());
+                return;
+            }
             if (command.operation == "cancel")
             {
                 ClearOperation(botAI);
