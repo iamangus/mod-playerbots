@@ -1339,6 +1339,13 @@ struct AgentRuntime::Impl
             if (command.operation == "invite_to_group")
             {
                 Player* target = ObjectAccessor::FindPlayerByName(GetString(arguments, "player_name"));
+                if (target && target->GetGroup())
+                {
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  EscapeJson(std::string(target->GetName())) +
+                                      " is already in a group; pick someone with in_group=false");
+                    return;
+                }
                 bool const invited =
                     target && target != botAI->GetBot() &&
                     botAI->DoSpecificAction("agent invite to group", Event("agent invite to group", "", target), true);
