@@ -621,9 +621,28 @@ world/native captures running at
 `/tmp/opencode/alternate-routes-live-{world.log,events.jsonl}`; not yet
 verified.
 
-**Next:** Analyze alternate-route capture; verify fewer no-progress runs and
-path-flag outcomes. Continue TASK-011
-group/social and cohort validation. Broader quest-type coverage remains pending.
+**Completed alternate-route capture** (280.2 s, 75 bots sampled, 42 moving):
+204 of 212 objective navigations arrived (6 stalls), 10 of 10 quest-giver
+navigations arrived (zero giver stalls; Melidoran's route included), 4 of 14
+turn-ins arrived (6 turn-in stalls), four native rewards, no
+"quest destination unavailable". Urne completed Sarkoth (quest 790 item 4905
+0→1), a quest previously level-blocked, confirming eligibility plus
+progression. Gains also on 792/750/788/3361. Report:
+`/tmp/opencode/alternate-routes-live-report.json`.
+
+**Remaining stall diagnosis (verified, not guessed):** Every quest navigation
+stall is a long cross-zone goal (roughly 400-1600 yards: Desolace coast,
+Thousand Needles, Azuremyst→Exodar, Terokkar) where the native pathfinder
+returns no complete route: path flags 10 (SHORTCUT|NOPATH), 68
+(INCOMPLETE|FARFROMPOLY_START) or 17 (NORMAL|NOT_USING_PATH, missing navmesh
+region). Same-map local loops work; local explicit search segments are healthy
+(1316 displacement-verified). These goals need the travel-node/road corridor
+route system or flight paths, which remain disabled pending verified corridor
+data (standing owner decision); do not claim them fixed. Gather stalls at
+map-530 sea positions and Lantander's gameobject case remain open edge cases.
+Cross-zone routing, remaining quest-type coverage and autonomous level-80
+progression stay unproven. Continue TASK-011 group/social and cohort
+validation; broader quest-type coverage remains pending.
 
 ### TASK-012 — Remove legacy autonomous AI tree (queued)
 
