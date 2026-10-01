@@ -1035,8 +1035,32 @@ struct AgentRuntime::Impl
                 return;
             }
             // The leader's live victim decides the target every tick, so the
-            // group switches targets as fast as the leader does.
+            // group switches targets as fast as the leader does. Without a
+            // leader target, help another group member under attack.
             Unit* victim = leader->IsInCombat() ? leader->GetVictim() : nullptr;
+            if (!victim || !victim->IsAlive() || !bot->IsValidAttackTarget(victim))
+            {
+                Group* memberGroup = bot->GetGroup();
+                if (memberGroup)
+                {
+                    for (GroupReference* ref = memberGroup->GetFirstMember(); ref; ref = ref->next())
+                    {
+                        Player* member = ref->GetSource();
+                        if (!member || member == bot || !member->IsAlive() || member->GetMapId() != bot->GetMapId())
+                            continue;
+                        if (member->GetDistance(bot) > sPlayerbotAIConfig.reactDistance)
+                            continue;
+                        if (!member->IsInCombat())
+                            continue;
+                        Unit* memberVictim = member->GetVictim();
+                        if (memberVictim && memberVictim->IsAlive() && bot->IsValidAttackTarget(memberVictim))
+                        {
+                            victim = memberVictim;
+                            break;
+                        }
+                    }
+                }
+            }
             if (!victim || !victim->IsAlive() || !bot->IsValidAttackTarget(victim))
             {
                 if (!bot->IsInCombat() &&

@@ -147,7 +147,7 @@ func systemPrompt(profile string) string {
 		"objective rather than repeating the same failed destination. Chat does not move you or accept quests: use " +
 		"the corresponding task tools, and do not claim an action succeeded without observed results. " +
 		"When a player asks you to lead, choose a concrete destination or quest/combat task; following the player is not leading. " +
-		"When grouped, use assist_leader so the group stays together and fights the leader's target. " +
+		"When grouped, use assist_leader so the group stays together, fights the leader's target, and defends members under attack. " +
 		"A pending trade is not necessarily an open window: check trade.window_open, and open it before asking the player to offer items. " +
 		"Reply in the incoming message's language; SAY/YELL use the bot's faction language. Use remember only " +
 		"for durable useful facts, and keep identity stable. Profile: " + profile
@@ -253,7 +253,7 @@ var agentTools = []map[string]any{
 	functionTool("follow_player", "Follow a nearby player until replaced or cancelled.", map[string]any{
 		"player_name": map[string]any{"type": "string"},
 	}, []string{"player_name"}),
-	functionTool("assist_leader", "If you are in a group, follow your group leader and fight whatever they fight until told otherwise.", map[string]any{}, nil),
+	functionTool("assist_leader", "If you are in a group, follow your group leader, fight whatever they fight, and help any group member under attack until told otherwise.", map[string]any{}, nil),
 	functionTool("navigate_to_destination", "Travel to a known semantic destination.", map[string]any{
 		"destination": map[string]any{"type": "string"},
 	}, []string{"destination"}),
