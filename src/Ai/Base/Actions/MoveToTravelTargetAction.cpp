@@ -5,6 +5,7 @@
  */
 
 #include "MoveToTravelTargetAction.h"
+
 #include "ChooseRpgTargetAction.h"
 #include "LootObjectStack.h"
 #include "Playerbots.h"
@@ -15,6 +16,16 @@ bool MoveToTravelTargetAction::Execute(Event /*event*/)
 
     WorldPosition botLocation(bot);
     WorldLocation location = *target->getPosition();
+
+    // Forced same-map orders have one exact destination, not a roaming spread
+    // around it. The agent runtime also drives this movement while its operation
+    // is active, so low relevance/activity throttling cannot starve the order.
+    if (target->isForced() && location.GetMapId() == bot->GetMapId())
+    {
+        AgentMoveToTargetAction movement(botAI);
+        return movement.MoveToPosition(location.GetMapId(), location.GetPositionX(), location.GetPositionY(),
+                                       location.GetPositionZ());
+    }
 
     Group* group = bot->GetGroup();
     if (group && !urand(0, 1) && bot == botAI->GetGroupLeader() && !bot->IsInCombat())
@@ -82,8 +93,8 @@ bool MoveToTravelTargetAction::Execute(Event /*event*/)
     // two random points around the same quest POI instead of
     // committing to one approach.
     uint32 botLow = bot->GetGUID().GetCounter();
-    int32 destSeed = static_cast<int32>(location.GetPositionX()) * 73856093 ^
-                     static_cast<int32>(location.GetPositionY()) * 19349663;
+    int32 destSeed =
+        static_cast<int32>(location.GetPositionX()) * 73856093 ^ static_cast<int32>(location.GetPositionY()) * 19349663;
     uint32 seed = botLow ^ static_cast<uint32>(destSeed);
     float angle = 2.0f * static_cast<float>(M_PI) * static_cast<float>(seed % 1000) / 1000.0f;
     float mod = 0.5f + static_cast<float>((seed / 1000) % 1000) / 2000.0f;  // [0.5, 1.0]

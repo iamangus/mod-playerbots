@@ -492,12 +492,50 @@ requests this validated lookup after arrival instead of choosing an arbitrary
 displayed NPC or treating projection absence as proof of no receiver. Updated
 two regressions for incomplete projections, serialized failure/arrival budgets.
 Full race suite (three runs), vet, formatting/codestyle/whitespace pass; core and
-controller follow-up builds succeeded and publication is running under
-`local-native-quest-receiver`. Subsequent deployment must run another clean reset.
+controller follow-up builds succeeded. Committed/pushed as `79a8ad5a` and
+published/deployed under `local-native-quest-receiver`: core `e5470389…`,
+controller `cd600f3b…`; saved image pins match. Mandatory second clean reset
+completed all four rollouts (`/tmp/opencode/clean-reset-native-quest-receiver.log`).
+Affected pods are ready with zero restarts. Completed five-minute native capture
+(299.6 seconds) at `/tmp/opencode/native-quest-receiver-live-events.jsonl`:
+42 bots sampled, 25 observed moving, eight native quest rewards, 58 objective
+navigation arrivals, 145 displacement-verified search segments. Highest per-bot
+turn-in result count was four, not thousands; no instant-arrival storm observed.
+Three native `recover_death` completions verified resurrection (Uldoril once,
+Ualucha twice); independent snapshots show dead→alive for both bots. Item gains
+include Dehan quest 9293 (0→10) and Boasmio quest 750 (0→7). Controller capture
+has a slightly wider window: 11 quest turn-ins, 12 accepts, four recovery task
+completions. Do not combine those counts with the narrower native window.
+Remaining failures: 14 objective navigation stalls, 12 turn-in navigation stalls,
+five giver navigation stalls and four local-search path rejections. These fixes
+prove selected item acquisition, ordinary same-map recovery and bounded turn-in
+behavior, not universal navigation or level-80 progression. Report:
+`/tmp/opencode/native-quest-receiver-live-report.json`.
 
-**Next:** Deploy receiver follow-up, mandatory reset, verify turn-ins and remaining
-navigation stalls; verify item acquisition/objective navigation/corpse
-recovery live; then continue TASK-011 group/social and cohort validation.
+**Navigation follow-up (active):** Original request: "Are you able to fix the navigation errors?"
+Trace stalled native travel, fix reachable-path execution and arrival handling,
+retain honest failures for unreachable destinations, then verify live. Existing
+build/deployment authorization applies; no guild repair or legacy AI restoration.
+Stall snapshots show alive/movable bots outside combat with forced destinations
+still traveling; some are within 7–25 yards of their receiver. Native code still
+offset forced destinations using legacy roaming spread (without correcting the
+offset's height), and runtime navigation only observed the legacy low-relevance
+engine instead of driving the native movement child. Implemented exact same-map
+forced movement, explicit runtime movement attempts (idle only, at most once per
+second), and destination-floor-preserving PathGenerator validation. Reject
+shortcut/no-path/short-overflow/missing-mmap/off-start-mesh paths; permit useful
+partial-path movement but verify arrival against the actual destination. This
+also changes coordinate and corpse-run movement consumers; ordinary legacy
+unforced movement retains its path. Creator lookups, codestyle, clang-format,
+whitespace and controller race suite pass. Both custom-core builds passed; final
+image includes the reviewed SHORT-overflow rejection
+(`/tmp/opencode/explicit-navigation-core-final-build.log`). Publication is running
+under `local-explicit-navigation`. No new image has been deployed and no gameplay
+improvement is claimed yet.
+
+**Next:** Complete final native build, publish/deploy and mandatory clean reset,
+then compare actual movement/arrivals and remaining navigation stalls. Continue TASK-011
+group/social and cohort validation. Broader quest-type coverage remains pending.
 
 ### TASK-012 — Remove legacy autonomous AI tree (queued)
 

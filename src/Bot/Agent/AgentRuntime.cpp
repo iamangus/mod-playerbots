@@ -2146,6 +2146,19 @@ struct AgentRuntime::Impl
                 bool const arrived = travel->isWorking() || travel->getDestination()->isIn(&position);
                 FinishOperation(botAI, arrived, arrived ? "arrived" : "travel ended before arrival");
             }
+            else if (!bot->isMoving() && !bot->IsInFlight() &&
+                     (!loop.lastMoveAttemptMs || getMSTimeDiff(loop.lastMoveAttemptMs, now) >= 1000))
+            {
+                WorldPosition const* destination = travel->getPosition();
+                if (destination && destination->GetMapId() == bot->GetMapId())
+                {
+                    loop.lastMoveAttemptMs = now;
+                    AgentMoveToTargetAction movement(botAI);
+                    loop.movementStarted =
+                        movement.MoveToPosition(destination->GetMapId(), destination->GetPositionX(),
+                                                destination->GetPositionY(), destination->GetPositionZ());
+                }
+            }
             return;
         }
         if (operation == "move_random")

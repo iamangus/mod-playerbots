@@ -50,8 +50,31 @@ bool AgentMoveToTargetAction::Execute(Event event)
 
 bool AgentMoveToTargetAction::MoveToPosition(uint32 mapId, float x, float y, float z)
 {
-    // Coordinate goals use ordinary native navigation, never teleport/map changes.
-    return bot && bot->GetMapId() == mapId && MoveTo(mapId, x, y, z, false, false, true);
+    if (!bot || bot->GetMapId() != mapId || !IsMovingAllowed() || bot->isMoving() || !std::isfinite(x) ||
+        !std::isfinite(y) || !std::isfinite(z))
+        return false;
+
+    // Preserve the destination's floor. Legacy MoveTo samples other heights,
+    // then discards its chosen path and asks MovePoint to calculate it again.
+    // An explicit order must never substitute a shorter path on another floor.
+    PathGenerator path(bot);
+    if (!path.CalculatePath(x, y, z) || !(path.GetPathType() & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) ||
+        (path.GetPathType() & (PATHFIND_SHORTCUT | PATHFIND_NOPATH | PATHFIND_SHORT | PATHFIND_NOT_USING_PATH |
+                               PATHFIND_FARFROMPOLY_START)) ||
+        path.GetPath().size() < 2)
+        return false;
+
+    G3D::Vector3 const& end = path.GetActualEndPosition();
+    if (bot->GetExactDist(end.x, end.y, end.z) < 1.0f)
+        return false;
+
+    UpdateMovementState();
+    if (bot->IsSitState())
+        bot->SetStandState(UNIT_STAND_STATE_STAND);
+    // Partial paths may advance a long route, but reaching their endpoint is
+    // never proof that the requested destination was reached.
+    DoMovePoint(bot, end.x, end.y, end.z, true, false);
+    return true;
 }
 
 bool AgentMoveToTargetAction::MoveToTarget(WorldObject* target, float distance)
