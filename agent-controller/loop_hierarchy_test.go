@@ -82,6 +82,23 @@ func nextLoopCommand(t *testing.T, commands <-chan command) command {
 	return command{}
 }
 
+func TestAssistLeaderStartsPersistentPrimitive(t *testing.T) {
+	a, commands := loopTestActor(t)
+	a.latest.Bot.GroupSize = 2
+	a.startAssistLeaderTask()
+	cmd := nextLoopCommand(t, commands)
+	if cmd.Operation != "assist_leader" || cmd.OperationID != a.state.Task.OperationID {
+		t.Fatal("assist_leader did not start one persistent loop")
+	}
+	// Not in a group: reject instead of starting a loop.
+	b, _ := loopTestActor(t)
+	b.latest.Bot.GroupSize = 1
+	b.startAssistLeaderTask()
+	if b.state.Task != nil {
+		t.Fatal("assist_leader started without a group")
+	}
+}
+
 func TestFollowStartsOnePersistentPrimitive(t *testing.T) {
 	a, commands := loopTestActor(t)
 	a.latest.NearbyPlayers = []playerInfo{{GUIDRaw: "1", Name: "Human"}}

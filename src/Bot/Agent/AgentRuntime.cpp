@@ -963,6 +963,7 @@ struct AgentRuntime::Impl
         uint32 const now = getMSTime();
         bool const combat = operation == "engage_target";
         bool const follow = operation == "follow_player";
+        bool const assist = operation == "assist_leader";
         bool const travelOperation = operation == "navigate_to_destination" ||
                                      operation == "navigate_to_quest_objective" ||
                                      operation == "navigate_to_quest_turnin";
@@ -971,7 +972,7 @@ struct AgentRuntime::Impl
             FinishOperation(botAI, false, "bot died or left the operation map");
             return;
         }
-        if (bot->GetTradeData() || (bot->IsInCombat() && !combat))
+        if (bot->GetTradeData() || (bot->IsInCombat() && !combat && !assist))
         {
             if (!loop.paused && !bot->IsInCombat())
             {
@@ -991,7 +992,7 @@ struct AgentRuntime::Impl
             loop.position.Relocate(bot);
             loop.lastProgressMs = now;
         }
-        if (!follow && getMSTimeDiff(loop.lastProgressMs, now) >= AGENT_OPERATION_STALL_MS)
+        if (!follow && !assist && getMSTimeDiff(loop.lastProgressMs, now) >= AGENT_OPERATION_STALL_MS)
         {
             FinishOperation(botAI, false, "local operation made no progress");
             return;
@@ -1022,6 +1023,40 @@ struct AgentRuntime::Impl
         {
             if (loop.movementStarted && !bot->isMoving())
                 FinishOperation(botAI, true, "search segment reached");
+            return;
+        }
+        if (operation == "assist_leader")
+        {
+            Group* group = bot->GetGroup();
+            Player* leader = group ? ObjectAccessor::FindPlayer(group->GetLeaderGUID()) : nullptr;
+            if (!leader || leader == bot || leader->GetMapId() != bot->GetMapId())
+            {
+                FinishOperation(botAI, false, "no group leader to assist");
+                return;
+            }
+            // The leader's live victim decides the target every tick, so the
+            // group switches targets as fast as the leader does.
+            Unit* victim = leader->IsInCombat() ? leader->GetVictim() : nullptr;
+            if (!victim || !victim->IsAlive() || !bot->IsValidAttackTarget(victim))
+            {
+                if (!bot->IsInCombat() &&
+                    (!bot->isMoving() ||
+                     bot->GetMotionMaster()->GetCurrentMovementGeneratorType() != FOLLOW_MOTION_TYPE))
+                {
+                    if (!loop.lastMoveAttemptMs || getMSTimeDiff(loop.lastMoveAttemptMs, now) >= 1000)
+                    {
+                        loop.lastMoveAttemptMs = now;
+                        AgentMoveToTargetAction movement(botAI);
+                        loop.movementStarted = movement.MoveToTarget(leader, sPlayerbotAIConfig.followDistance);
+                    }
+                }
+                loop.lastProgressMs = now;
+                return;
+            }
+            if (bot->GetVictim() != victim || (!bot->IsInCombat() && !bot->isMoving()))
+                loop.attempted = botAI->DoSpecificAction("agent attack target",
+                                                         Event("agent attack target", victim->GetGUID()), true);
+            loop.lastProgressMs = now;
             return;
         }
 
@@ -1186,7 +1221,7 @@ struct AgentRuntime::Impl
             if (botAI->GetBot()->GetTradeData() &&
                 (command.operation == "move_random" || command.operation == "approach_target" ||
                  command.operation == "engage_target" || command.operation == "follow_player" ||
-                 command.operation.compare(0, 9, "navigate_") == 0))
+                 command.operation == "assist_leader" || command.operation.compare(0, 9, "navigate_") == 0))
             {
                 PublishResult(command.requestId, command.operationId, command.operation, "rejected",
                               "movement and combat tasks are paused during trade");
@@ -1253,6 +1288,20 @@ struct AgentRuntime::Impl
                     PublishResult(
                         command.requestId, command.operationId, command.operation, "rejected",
                         botAI->GetBot()->isMoving() ? "bot is already moving" : "local search path unavailable");
+                return;
+            }
+            if (command.operation == "assist_leader")
+            {
+                Player* bot = botAI->GetBot();
+                Group* group = bot->GetGroup();
+                Player* leader = group ? ObjectAccessor::FindPlayer(group->GetLeaderGUID()) : nullptr;
+                if (!leader || leader == bot)
+                {
+                    PublishResult(command.requestId, command.operationId, command.operation, "rejected",
+                                  "no group leader to assist");
+                    return;
+                }
+                StartOperation(botAI, command);
                 return;
             }
             if (command.operation == "cancel")

@@ -1124,6 +1124,8 @@ func (a *actor) applyTool(call toolCall) {
 		a.sendPrimitive(call.Name, rawMapToAny(args))
 	case "navigate_to_player", "follow_player":
 		a.startPlayerNavigationTask(call.Name, args)
+	case "assist_leader":
+		a.startAssistLeaderTask()
 	case "navigate_to_destination":
 		a.startDestinationTask(args)
 	case "work_on_quest":
@@ -1324,6 +1326,10 @@ func (a *actor) advanceTask() {
 		a.advancePlayerNavigationTask(current)
 	case "navigate_destination":
 		a.advanceDestinationTask(current)
+	case "assist_leader":
+		// The core loop self-drives on live group state; progress events keep
+		// the task alive and the controller only supervises timeouts.
+		return
 	default:
 		a.finishTask("failed", "unsupported task type")
 	}
@@ -1394,6 +1400,22 @@ func (a *actor) startDestinationTask(args map[string]json.RawMessage) {
 		Phase: "travel", MapID: a.latest.Bot.MapID, LastProgressUTC: time.Now().UTC()}
 	a.state.Task = current
 	current.OperationID = a.sendPrimitive("navigate_to_destination", map[string]any{"destination": destination})
+	a.persist()
+}
+
+func (a *actor) startAssistLeaderTask() {
+	if a.latest.Bot.GroupSize < 2 {
+		a.rejectTool("assist_leader", "you are not in a group")
+		return
+	}
+	if a.state.Task != nil && a.state.Task.Kind == "assist_leader" {
+		return
+	}
+	a.cancelTaskPrimitive()
+	current := &task{ID: newID(), Kind: "assist_leader", Phase: "assisting",
+		MapID: a.latest.Bot.MapID, LastProgressUTC: time.Now().UTC()}
+	a.state.Task = current
+	current.OperationID = a.sendPrimitive("assist_leader", map[string]any{})
 	a.persist()
 }
 
@@ -2032,6 +2054,11 @@ func (a *actor) handleTaskOperation(incoming event) {
 	case "approaching":
 		current.Phase = "combat"
 		current.OperationID = a.sendPrimitive("engage_target", map[string]any{"target_guid": current.TargetGUID})
+	case "assisting":
+		// assist_leader only ends when the leader disappears or the loop is
+		// cancelled; a terminal result here is the leader-loss rejection.
+		a.finishTask("blocked", "group leader is no longer available: "+result.Reason)
+		return
 	case "moving":
 		if current.Kind == "navigate_player" || current.Kind == "navigate_to_player" {
 			a.finishTask("completed", "arrived at player")
