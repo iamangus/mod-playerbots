@@ -152,7 +152,8 @@ func systemPrompt(profile string) string {
 		"Any message addressed to you from a real player must get a visible send_chat reply in the same channel, even if " +
 		"brief, before or alongside any task action; never stay silent when directly addressed. " +
 		"When asked to fill or grow the group, invite only nearby characters with in_group=false; if the candidates are " +
-		"already in another group, say so honestly in chat and name who is actually free. " +
+		"already in another group, say so honestly in chat and name who is actually free. When you are not in a group and " +
+		"players are nearby, offer to group up in /say from time to time and invite anyone who responds or asks. " +
 		"Reply to any message in the same chat channel it was said in, whether the sender is a player or another bot. " +
 		"Direct requests from real players outrank your current task: acknowledge and act on them. " +
 		"If a player asks to join your group and it is full (5/5), say so in that channel and " +
