@@ -1369,12 +1369,11 @@ void AgentRuntime::OnQuestProgress(PlayerbotAI* botAI, uint32 opcode)
 uint64 AgentRuntime::GetTradeRevision() const { return m_impl->tradeRevision.load(); }
 
 void AgentRuntime::OnTradeOperationResult(std::string const& requestId, std::string const& operationId,
-                                         std::string const& operation, bool success)
+                                          std::string const& operation, bool success)
 {
     std::ostringstream payload;
-    payload << "{\"operation_id\":\"" << EscapeJson(operationId) << "\",\"operation\":\""
-            << EscapeJson(operation) << "\",\"status\":\"" << (success ? "completed" : "rejected")
-            << "\",\"reason\":\""
+    payload << "{\"operation_id\":\"" << EscapeJson(operationId) << "\",\"operation\":\"" << EscapeJson(operation)
+            << "\",\"status\":\"" << (success ? "completed" : "rejected") << "\",\"reason\":\""
             << (success ? "trade state updated" : "trade changed or operation unavailable; inspect fresh state")
             << "\"}";
     m_impl->Publish("operation_result", requestId, payload.str());

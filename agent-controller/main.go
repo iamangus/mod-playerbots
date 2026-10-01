@@ -347,6 +347,7 @@ type persistedAgent struct {
 	DecisionPending         bool                 `json:"decision_pending,omitempty"`
 	UnavailableDestinations map[string]time.Time `json:"unavailable_destinations,omitempty"`
 	ClusterGroupInvite      bool                 `json:"cluster_group_invite,omitempty"`
+	ClusterSocialSession    bool                 `json:"cluster_social_session,omitempty"`
 }
 
 type recentEvent struct {
@@ -836,6 +837,8 @@ func (a *actor) handleEvent(incoming event) {
 	}
 	if incoming.OwnerToken != a.state.OwnerToken ||
 		(incoming.OwnerEpoch != "" && a.state.OwnerEpoch != "" && incoming.OwnerEpoch != a.state.OwnerEpoch) {
+		a.state.ClusterSocialSession = false
+		a.state.ClusterGroupInvite = false
 		if a.state.Task != nil {
 			a.state.Task.OperationID = ""
 			a.state.Task.Phase = "select"
@@ -875,6 +878,10 @@ func (a *actor) handleEvent(incoming event) {
 		}
 	}
 	switch incoming.Type {
+	case "social_session_ready":
+		a.state.ClusterSocialSession = true
+		a.persist()
+		return
 	case "snapshot", "primitive_progress", "bot_heartbeat":
 	default:
 		a.rememberEvent(incoming)
@@ -947,8 +954,10 @@ func (a *actor) handleEvent(incoming event) {
 		var socialResult struct {
 			SocialBridge bool   `json:"social_bridge"`
 			Status       string `json:"status"`
+			Operation    string `json:"operation"`
 		}
-		if json.Unmarshal(incoming.Payload, &socialResult) == nil && socialResult.SocialBridge && socialResult.Status == "completed" {
+		if json.Unmarshal(incoming.Payload, &socialResult) == nil && socialResult.SocialBridge && socialResult.Status == "completed" &&
+			(socialResult.Operation == "accept_group_invite" || socialResult.Operation == "decline_group_invite") {
 			a.state.ClusterGroupInvite = false
 			a.persist()
 		}
@@ -2121,14 +2130,15 @@ func (a *actor) sendCommandWithID(requestID, operationID, operation string, argu
 		log.Printf("encode command for %s: %v", a.botGUID, err)
 		return
 	}
-	subject := commandSubject(a.owner.cfg.subjectPrefix, a.ownerToken, operation, a.state.ClusterGroupInvite)
+	subject := commandSubject(a.owner.cfg.subjectPrefix, a.ownerToken, operation, a.state.ClusterGroupInvite, a.state.ClusterSocialSession)
 	if err := a.owner.nats.Publish(subject, body); err != nil {
 		log.Printf("publish command for bot %s: %v", a.botGUID, err)
 	}
 }
 
-func commandSubject(prefix, owner, operation string, clusterInvite bool) string {
-	if clusterInvite && (operation == "accept_group_invite" || operation == "decline_group_invite") {
+func commandSubject(prefix, owner, operation string, clusterInvite, clusterSession bool) string {
+	if (clusterInvite && (operation == "accept_group_invite" || operation == "decline_group_invite")) ||
+		(clusterSession && operation == "invite_to_group") {
 		return prefix + ".social.commands." + owner
 	}
 	return prefix + ".commands." + owner

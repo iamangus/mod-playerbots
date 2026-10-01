@@ -215,15 +215,18 @@ func TestCombatApproachesDistantTargetsBeforeEngaging(t *testing.T) {
 
 func TestClusterInvitationUsesGroupServiceBridge(t *testing.T) {
 	for _, operation := range []string{"accept_group_invite", "decline_group_invite"} {
-		if commandSubject("playerbots.v1", "owner", operation, true) != "playerbots.v1.social.commands.owner" {
+		if commandSubject("playerbots.v1", "owner", operation, true, false) != "playerbots.v1.social.commands.owner" {
 			t.Fatal("cluster invitation was sent to a native-only group handler")
 		}
-		if commandSubject("playerbots.v1", "owner", operation, false) != "playerbots.v1.commands.owner" {
+		if commandSubject("playerbots.v1", "owner", operation, false, false) != "playerbots.v1.commands.owner" {
 			t.Fatal("native invitation was redirected to the cluster")
 		}
 	}
-	if commandSubject("playerbots.v1", "owner", "snapshot", true) != "playerbots.v1.commands.owner" {
+	if commandSubject("playerbots.v1", "owner", "snapshot", true, true) != "playerbots.v1.commands.owner" {
 		t.Fatal("ordinary primitives must still execute in the core")
+	}
+	if commandSubject("playerbots.v1", "owner", "invite_to_group", false, true) != "playerbots.v1.social.commands.owner" {
+		t.Fatal("bot-originated invitations bypassed the authoritative group service")
 	}
 }
 
