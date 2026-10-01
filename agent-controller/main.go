@@ -395,6 +395,7 @@ type task struct {
 	LootTargets                  []string        `json:"loot_targets,omitempty"`
 	ObjectiveItemID              uint32          `json:"objective_item_id,omitempty"`
 	QuestSearchAttempts          uint32          `json:"quest_search_attempts,omitempty"`
+	QuestObjectAttempts          uint32          `json:"quest_object_attempts,omitempty"`
 	QuestTurninAttempts          uint32          `json:"quest_turnin_attempts,omitempty"`
 	ServiceOperation             string          `json:"service_operation,omitempty"`
 	ServiceArguments             json.RawMessage `json:"service_arguments,omitempty"`
@@ -2384,10 +2385,12 @@ func (a *actor) advanceQuestTask(current *task) {
 		current.ObjectiveCount = objective.Count
 		current.Retries = 0
 		current.QuestSearchAttempts = 0
+		current.QuestObjectAttempts = 0
 	} else if objective.Count > current.ObjectiveCount {
 		current.ObjectiveCount = objective.Count
 		current.Retries = 0
 		current.QuestSearchAttempts = 0
+		current.QuestObjectAttempts = 0
 	}
 	if objective.Entry == 0 && objective.ItemID != 0 {
 		if len(objective.Sources) == 0 {
@@ -2405,10 +2408,14 @@ func (a *actor) advanceQuestTask(current *task) {
 	}
 	if entry < 0 || objective.ItemID != 0 {
 		for _, object := range a.latest.NearbyGameObjects {
-			if sourceMatches(-int32(object.Entry)) {
+			if object.GUID != "" && sourceMatches(-int32(object.Entry)) && (objective.ItemID == 0 || object.CanGather) {
+				if current.QuestObjectAttempts >= 3 {
+					a.finishTask("blocked", "quest object attempts did not advance the objective")
+					return
+				}
+				current.QuestObjectAttempts++
 				current.TargetGUID = object.GUID
 				current.Phase = "interacting"
-				current.Retries = 0
 				operation := "use_gameobject"
 				if objective.ItemID != 0 {
 					operation = "gather_target"

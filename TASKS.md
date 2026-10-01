@@ -529,12 +529,38 @@ also changes coordinate and corpse-run movement consumers; ordinary legacy
 unforced movement retains its path. Creator lookups, codestyle, clang-format,
 whitespace and controller race suite pass. Both custom-core builds passed; final
 image includes the reviewed SHORT-overflow rejection
-(`/tmp/opencode/explicit-navigation-core-final-build.log`). Publication is running
-under `local-explicit-navigation`. No new image has been deployed and no gameplay
-improvement is claimed yet.
+(`/tmp/opencode/explicit-navigation-core-final-build.log`). Committed/pushed as
+`413e348f`, published under `local-explicit-navigation` (core `422d2676…`), and
+patched gameserver by digest; saved image pin matches. Controller is unchanged
+(`cd600f3b…`). Mandatory reset finished all four rollouts
+(`/tmp/opencode/clean-reset-explicit-navigation.log`); affected pods ready with
+zero restarts and expected images. Completed capture at
+`/tmp/opencode/explicit-navigation-live-{events.jsonl,controller.log}`: native
+window spans 260.9 seconds, 42 bots sampled and 38 observed moving (previous
+299.6-second window: 25 of 42 moving). Navigation no-progress rejections fell
+from 33 in the previous window to zero. Native results: 157 objective arrivals,
+22 giver arrivals, 17 turn-in arrivals and 17 quest rewards; two objective
+destinations unavailable. Four verified recovery completions. Actual item/kill
+gains include quests 179/789/747/750/9280/9293/364/376/780/459. Comparison windows
+differ and are not a controlled performance benchmark. Broad quest task blocks
+still occur when the objective is not found; successful travel alone does not
+prove quest completion. Report: `/tmp/opencode/explicit-navigation-live-report.json`.
 
-**Next:** Complete final native build, publish/deploy and mandatory clean reset,
-then compare actual movement/arrivals and remaining navigation stalls. Continue TASK-011
+**Post-arrival safety follow-up:** Botanical Legwork (9799) arrived but generated
+17,068 native `gather_target` eligibility rejections (Ocomat 16,833, Zovuun 235).
+Quest selection ignored observed `can_gather=false` and reset terminal retry
+counts on each selection. Controller now respects native gather eligibility,
+retains failures across object reselection and persists a separate three-attempt
+object budget, reset only by observed objective count gains or objective change.
+This also bounds successful object interactions that produce no quest progress.
+Four regressions cover eligibility, repeated rejection, serialized no-progress
+attempts and budget reset on actual progress; full race suite (three runs), vet
+and whitespace pass. Controller-only build is running under
+`local-quest-object-bounds`; not deployed. This bounds failure, not proof that
+every quest-object mechanic is supported.
+
+**Next:** Publish/deploy quest-object safety follow-up, mandatory reset and bounded
+live verification. Continue TASK-011
 group/social and cohort validation. Broader quest-type coverage remains pending.
 
 ### TASK-012 — Remove legacy autonomous AI tree (queued)
