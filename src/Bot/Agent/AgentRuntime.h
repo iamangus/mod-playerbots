@@ -32,6 +32,11 @@ public:
 
     bool IsConfigured(PlayerbotAI* botAI) const;
     bool IsEnabled(PlayerbotAI* botAI) const;
+
+    // Subscribe this worldserver's bot command subject once. The population
+    // bridge calls it on the world thread so controller heartbeats reach the
+    // login gate before any bot is online. Idempotent.
+    static bool EnsureBotCommandSubscription(std::string const& subjectPrefix, std::string const& ownerToken);
     bool IsSendingChat() const;
     void OnLootResponse(WorldPacket const& packet);
     void OnAuctionBidderNotification(WorldPacket const& packet);

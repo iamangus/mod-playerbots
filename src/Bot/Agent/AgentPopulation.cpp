@@ -9,6 +9,7 @@
 #include <boost/bind/placeholders.hpp>
 
 #include "AgentBridgeShared.h"
+#include "AgentRuntime.h"
 
 namespace boost::property_tree::json_parser::detail
 {
@@ -115,6 +116,7 @@ struct AgentPopulation::Impl
     std::string ownerToken = agent_bridge::OwnerToken();
     PopulationInbox inbox;
     bool transportReady = false;
+    bool botCommandsReady = false;
     uint32 lastSubscribeCheckMs = 0;
     uint64 eventSequence = 1;
     std::map<std::string, std::string> resultCache;
@@ -574,16 +576,25 @@ void AgentPopulation::Update(uint32 diff)
     if (!IsEnabled())
         return;
 
-    if (!m_impl->transportReady &&
+    if (!m_impl->transportReady || !m_impl->botCommandsReady ||
         (!m_impl->lastSubscribeCheckMs ||
          getMSTimeDiff(m_impl->lastSubscribeCheckMs, getMSTime()) >= POPULATION_SUBSCRIBE_RETRY_MS))
     {
         m_impl->lastSubscribeCheckMs = getMSTime();
-        m_impl->transportReady = agent_bridge::Subscribe(
-            PopulationCommandSubject(m_impl->subjectPrefix, m_impl->ownerToken), &Impl::ReceiveCommand);
-        if (m_impl->transportReady)
-            LOG_INFO("playerbots.agent", "Population bridge subscribed on {}",
-                     PopulationCommandSubject(m_impl->subjectPrefix, m_impl->ownerToken).c_str());
+        if (!m_impl->transportReady)
+        {
+            m_impl->transportReady = agent_bridge::Subscribe(
+                PopulationCommandSubject(m_impl->subjectPrefix, m_impl->ownerToken), &Impl::ReceiveCommand);
+            if (m_impl->transportReady)
+                LOG_INFO("playerbots.agent", "Population bridge subscribed on {}",
+                         PopulationCommandSubject(m_impl->subjectPrefix, m_impl->ownerToken).c_str());
+        }
+        // Subscribe the bot command subject on the world thread so controller
+        // heartbeats open the required-controller login gate before any bot is
+        // online. Idempotent and shared with the per-bot runtime refresh.
+        if (sPlayerbotAIConfig.agentBridgeEnabled)
+            m_impl->botCommandsReady =
+                AgentRuntime::EnsureBotCommandSubscription(m_impl->subjectPrefix, m_impl->ownerToken);
     }
     if (!m_impl->transportReady)
         return;

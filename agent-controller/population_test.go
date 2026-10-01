@@ -55,11 +55,32 @@ func TestPopulationOwnerDiscoveryWithoutBots(t *testing.T) {
 	if got := m.activeOwnerToken(); got != "live" {
 		t.Fatalf("older heartbeat replaced live owner: %s", got)
 	}
-	if len(c.owners) != 0 {
-		t.Fatal("population discovery registered a nonexistent bot shard")
+	// Every non-stale owner announcement must be registered across every owned
+	// shard so controller heartbeats reach the native login gate before any bot
+	// is online; only stale announcements stay unregistered.
+	for owner, shards := range c.owners {
+		if owner == "stale" {
+			t.Fatal("stale announcement registered an owner")
+		}
+		if len(shards) != eventShardCount {
+			t.Fatalf("owner %s not registered for all owned shards (%d)", owner, len(shards))
+		}
 	}
+	if _, registered := c.owners["live"]; !registered {
+		t.Fatal("live owner missing from heartbeat registration")
+	}
+	// An expired population stamp falls back to recent heartbeat registration so
+	// commands still reach a live worldserver when no bot is online.
 	m.ownerSeen = time.Now().Add(-3 * time.Minute)
+	if got := m.activeOwnerToken(); got != "older" {
+		t.Fatalf("heartbeat registration fallback did not select the live owner: %q", got)
+	}
+	// With no fresh registration either, no owner is selectable.
+	c.ownersMu.Lock()
+	delete(c.owners, "older")
+	delete(c.owners, "live")
+	c.ownersMu.Unlock()
 	if got := m.activeOwnerToken(); got != "" {
-		t.Fatalf("expired owner selected: %s", got)
+		t.Fatalf("stale owner selected without fresh registration: %q", got)
 	}
 }

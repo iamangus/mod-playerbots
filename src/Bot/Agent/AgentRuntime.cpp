@@ -3004,6 +3004,11 @@ bool AgentRuntime::IsControllerPresent()
     return last && getMSTimeDiff(last, getMSTime()) < AGENT_CONTROLLER_TIMEOUT_MS;
 }
 
+bool AgentRuntime::EnsureBotCommandSubscription(std::string const& subjectPrefix, std::string const& ownerToken)
+{
+    return AgentBridgeTransport::EnsureSubscribed(subjectPrefix, ownerToken);
+}
+
 bool AgentRuntime::IsConfigured(PlayerbotAI* botAI) const
 {
     if (!botAI || !botAI->GetBot() || !sPlayerbotAIConfig.agentBridgeEnabled || !IsSupported())

@@ -731,6 +731,31 @@ func (c *controller) noteOwner(ownerToken string, shard uint32) {
 	shards[shard] = time.Now().UTC()
 }
 
+// noteOwnedShards registers a worldserver owner for controller heartbeats on
+// every shard this controller subscribes to. Population owner announcements are
+// the only owner signal before any bot is online; without them the required-
+// controller login gate and heartbeat registration deadlock after a clean reset.
+func (c *controller) noteOwnedShards(ownerToken string) {
+	if ownerToken == "" {
+		return
+	}
+	count := c.cfg.shardCount
+	if count == 0 {
+		count = 1
+	}
+	now := time.Now().UTC()
+	c.ownersMu.Lock()
+	defer c.ownersMu.Unlock()
+	shards := c.owners[ownerToken]
+	if shards == nil {
+		shards = make(map[uint32]time.Time)
+		c.owners[ownerToken] = shards
+	}
+	for shard := c.cfg.shardID; shard < eventShardCount; shard += count {
+		shards[shard] = now
+	}
+}
+
 func (c *controller) heartbeatOwnersLoop() {
 	ticker := time.NewTicker(20 * time.Second)
 	defer ticker.Stop()

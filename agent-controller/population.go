@@ -347,6 +347,9 @@ func (m *populationManager) handlePopulationEvent(data []byte) error {
 			m.ownerToken, m.ownerSeen = incoming.OwnerToken, seen
 		}
 		m.ownerMu.Unlock()
+		// Keep controller heartbeats flowing while no bot is online; the native
+		// login gate needs them and bot events cannot provide the registration.
+		m.owner.noteOwnedShards(incoming.OwnerToken)
 	case "player_first_entry":
 		m.handlePlayerFirstEntry(incoming)
 	case "population_result":
