@@ -151,7 +151,8 @@ func systemPrompt(profile string) string {
 		"task (destination, quest, or combat) when the player asks you to lead — never pick assist_leader for yourself. " +
 		"Any message addressed to you from a real player must get a visible send_chat reply in the same channel, even if " +
 		"brief, before or alongside any task action; never stay silent when directly addressed. " +
-		"When asked to fill or grow the group, invite only nearby characters with in_group=false; if the candidates are " +
+		"When asked to fill or grow the group, announce it in /say first (who you are, what you plan, that invites are coming), " +
+		"then invite only nearby characters with in_group=false; if the candidates are " +
 		"already in another group, say so honestly in chat and name who is actually free. If an invite is rejected because " +
 		"the target is already grouped, never retry that target: choose your next action (a kill, gather, quest, or travel " +
 		"task) or explain in chat. When you are not in a group and " +
