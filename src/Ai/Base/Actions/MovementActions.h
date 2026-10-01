@@ -81,6 +81,8 @@ private:
     const Movement::PointsArray SearchForBestPath(float x, float y, float z, float& modified_z, int maxSearchCount = 5,
                                                   bool normal_only = false, float step = 8.0f);
     bool wasMovementRestricted = false;
+
+protected:
     void DoMovePoint(Unit* unit, float x, float y, float z, bool generatePath, bool backwards);
 };
 
@@ -248,6 +250,12 @@ public:
 
     bool Execute(Event event) override;
     bool isUseful() override;
+    // Explicitly commanded search: bypasses the legacy per-tick wait windows
+    // but keeps the physical collision/water gates.
+    bool MoveRandomExplicit(float distance);
+
+protected:
+    bool MoveRandomPoint(float distance, bool explicitCommand);
 };
 
 class MoveInsideAction : public MovementAction

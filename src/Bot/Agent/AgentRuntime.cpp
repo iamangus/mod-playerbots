@@ -1240,9 +1240,10 @@ struct AgentRuntime::Impl
                                   "bot is in combat or movement is restricted");
                     return;
                 }
-                // Explicit search commands must not inherit the legacy RPG-target usefulness gate.
+                // Explicit search commands must not inherit the legacy RPG-target
+                // usefulness gate or the per-tick wait windows.
                 MoveRandomAction search(botAI);
-                bool const moved = search.Execute(Event());
+                bool const moved = search.MoveRandomExplicit(sPlayerbotAIConfig.tooCloseDistance + urand(10, 30));
                 if (moved)
                 {
                     StartOperation(botAI, command);
