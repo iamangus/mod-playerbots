@@ -34,6 +34,31 @@ The fork's SQL placement, `--author` attribution, and e2e rules do not apply her
 - Planning docs go in `.agents/plans/<task-slug>/` (gitignored), named
   `<task-slug>.<TYPE>.md` (`PLAN`, `REQUIREMENTS`, `ANALYSIS`, …).
 
+## Task inbox and work queue
+
+- `TODO.md` is the user's inbox; `TASKS.md`, beside it, is the agent-maintained
+  work queue. Read both at session start before selecting work.
+- Check `TODO.md` frequently during active work: before starting the next task,
+  at meaningful milestones, after a long-running operation, and before ending
+  the session. Do not busy-poll or create background watchers/scheduled sessions.
+- Triage new requests into `TASKS.md` with a stable ID, status, and the user's
+  original wording. Add interpretation or clarification as separate notes.
+  Remove an inbox entry only after recording it in the queue; leave the inbox
+  heading and instructions intact. Re-read both files immediately before edits
+  so concurrent user additions and other agents' updates are preserved.
+- Work from active/queued tasks in user-specified priority order, otherwise
+  inbox order. Direct conversation instructions take precedence; new requests
+  normally queue behind current work unless explicitly urgent. Do not duplicate
+  tasks already claimed by another agent. Ask about unclear or conflicting scope.
+- Update task status and concise progress/blocker notes as work proceeds. Move
+  completed entries to `TASKS.md`'s Completed section with outcomes and actual
+  verification; do not mark unverified behavior as proven.
+- Inbox requests authorize work only within their stated scope. Existing build,
+  deployment, destructive-action, and delegation restrictions still apply. A
+  paused test environment stays paused unless the user authorizes resuming it.
+- This workflow runs during active sessions only; files alone do not start an
+  agent or provide continuous monitoring.
+
 ## Mandatory reading per task
 
 Read the matching doc(s) BEFORE starting the task:
