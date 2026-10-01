@@ -647,6 +647,18 @@ void RandomPlayerbotMgr::AssignAccountTypes()
             addClassTypeAccounts.push_back(accountId);
     }
 
+    // External provisioning skips the legacy factory that fills this list.
+    // Rehydrate classification from existing assignments during world startup,
+    // before map threads and logins start. Do not recreate or randomize characters.
+    if (sPlayerbotAIConfig.agentBridgePopulationEnabled)
+    {
+        std::unordered_set<uint32> registered(sPlayerbotAIConfig.randomBotAccounts.begin(),
+                                              sPlayerbotAIConfig.randomBotAccounts.end());
+        for (uint32 accountId : rndBotTypeAccounts)
+            if (registered.insert(accountId).second)
+                sPlayerbotAIConfig.randomBotAccounts.push_back(accountId);
+    }
+
     LOG_INFO("playerbots", "Account type assignment complete: {} RNDbot accounts, {} AddClass accounts, {} unassigned",
              rndBotTypeAccounts.size(), addClassTypeAccounts.size(),
              currentAssignments.size() - rndBotTypeAccounts.size() - addClassTypeAccounts.size());

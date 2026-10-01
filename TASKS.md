@@ -125,12 +125,42 @@ after restart; absence alone cannot prove a human logout. Added explicit
 unobserved presence stays unknown and cannot start offline XP gating. Added a
 restart/logout/login regression and controller unknown-presence checks. Full
 controller race suite (five runs), full charserver race tests and both vets pass.
-Controller/charserver images must be rebuilt/published with this correction before
-deploying; do not use their first digests above. Core image is unchanged.
+Controller/charserver images were rebuilt/published with this correction; do not
+use their first digests above. Core image was unchanged at that point.
 Existing core/charserver deployments use rolling surge despite in-memory bot
 ownership. Added opt-in `Recreate` chart strategy to avoid overlapping schedulers
 and social listeners when playerbot integration is enabled; Helm lint passes.
 Unrelated ToCloud9/Kubernetes working changes remain local and must be preserved.
+
+**Deployment/restart validation:** Committed presence correction as `fdfc2792`.
+Deployed corrected charserver
+`sha256:fd07a6d66adaff8141140a23bc4ab2cd1acda1f06bbfcbcb91c8ad27f582b3b8`,
+staged controller
+`sha256:77db032970e02507c5422551ab42d3fb26f8aac263c7c3734c9cc90d26096a3f`
+at zero replicas, and deployed the core digest above. Enabled opt-in social
+settings, preserving the remaining configuration. Charserver and core `Recreate`
+rollouts completed; both pods were ready with zero restarts at inspection.
+Kubernetes MCP cannot patch Secrets; used the authorized user kubeconfig for
+minimal patches. No character/group/Redis cleanup or LLM requests occurred.
+Observed two native population heartbeats and one request-correlated realm-1
+friendship manifest: 256 bots, explicitly partial. This proves that protocol path,
+not all affinities, native services, or 80-bot progression.
+
+**Restart finding:** External mode skips the legacy factory that initializes
+`randomBotAccounts`, while `IsRandomBot` still requires that list. Existing type-1
+assignments populate admission lists but not account classification. Added a
+startup-only external-mode rehydration from existing type-1 assignments before
+map threads/logins, without creating/randomizing characters or changing saved
+state. Native recompilation/redeployment and live causality verification are
+pending. No registered bot social sessions were seen in the inspected log tail;
+this is a symptom, not proof that this is the only restart problem.
+
+**Saved settings:** Updated saved image digests and matching social/population
+limits, and added an explicit chart `paused` switch preserving shard count.
+Rendered paused workload stays at zero replicas with shard count one. The saved
+Terraform release is still pinned to chart 0.2.4, which ignores the new switch;
+documented that applying that old chart would resume the controller. Updated
+chart publication/pinning remains outstanding; no blanket Helm/Tofu apply occurred.
 
 **Next:** Resolve compilation findings, review/commit, publish/deploy while preserving
 the pause, then perform authorized native/live validation and route-data collection.
