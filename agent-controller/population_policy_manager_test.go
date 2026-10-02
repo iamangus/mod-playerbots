@@ -68,6 +68,37 @@ func TestParsePolicyCensus(t *testing.T) {
 	}
 }
 
+func TestPopulationCensusLargerThanBotMessageLimit(t *testing.T) {
+	m := testPopulationManager(t, 100)
+	m.pendingCensus = map[string]chan policyCensus{"large": make(chan policyCensus, 1)}
+	census := policyCensus{Status: "completed", ObservedMs: 1000, Humans: []policyHuman{policyTestHuman(42, 0, 0, 1000)}}
+	for i := 0; i < 600; i++ {
+		census.Bots = append(census.Bots, policyTestBot(uint32(i+1), false, 0, 0, 1))
+	}
+	payload, err := json.Marshal(census)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(event{Type: "population_result", RequestID: "large", Payload: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) <= maxNATSMessageBytes {
+		t.Fatal("fixture must exceed per-bot ceiling")
+	}
+	if err := m.handlePopulationEvent(data); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-m.pendingCensus["large"]:
+		if len(got.Bots) != 600 || len(got.Humans) != 1 {
+			t.Fatal("large census lost observations")
+		}
+	default:
+		t.Fatal("whole-pool census was silently discarded")
+	}
+}
+
 func TestPolicyCommitmentExpiry(t *testing.T) {
 	m := testPopulationManager(t, 100)
 	runtime := &policyRuntime{createTTL: 30 * time.Minute, admitTTL: 30 * time.Minute, arrivedTTL: 24 * time.Hour}
@@ -311,5 +342,21 @@ func TestRejectedPolicyAdmissionKeepsCharacterAndDemand(t *testing.T) {
 	if len(live) != 2 || live[0].Kind != policyCommitCreate || live[0].BotGUID != 7 ||
 		live[0].CenterX != 500 || live[1].Kind != policyCommitAdmit {
 		t.Fatalf("refusal must permit retry without replacing the character or disturbing accepted admission: %+v", live)
+	}
+}
+
+func TestPopulationResultPreservesRejectedAdmissions(t *testing.T) {
+	m := testPopulationManager(t, 100)
+	wait := make(chan populationEventResult, 1)
+	m.pending = map[string]chan populationEventResult{"admit": wait}
+	m.handlePopulationResult(event{RequestID: "admit",
+		Payload: json.RawMessage(`{"status":"completed","rejected_guids":[7]}`)})
+	select {
+	case result := <-wait:
+		if len(result.RejectedGUIDs) != 1 || result.RejectedGUIDs[0] != 7 {
+			t.Fatal("native refusal identities must survive event delivery")
+		}
+	default:
+		t.Fatal("admission result was not delivered")
 	}
 }

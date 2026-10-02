@@ -352,7 +352,11 @@ func (m *populationManager) eventConsumerLoop() {
 }
 
 func (m *populationManager) handlePopulationEvent(data []byte) error {
-	if len(data) > maxNATSMessageBytes {
+	// A bounded whole-pool census is larger than a single bot snapshot.
+	// Keep its own ceiling rather than dropping valid populations above ~300.
+	const maxPopulationEventBytes = 1024 * 1024
+	if len(data) > maxPopulationEventBytes {
+		log.Printf("population event exceeds limit: bytes=%d", len(data))
 		return nil
 	}
 	var incoming event
@@ -466,7 +470,7 @@ func (m *populationManager) handlePopulationResult(incoming event) {
 	}
 	select {
 	case wait <- populationEventResult{Status: result.Status, GUID: result.GUID, Name: result.Name,
-		Reason: result.Reason, Level: result.Level, Timestamp: incoming.Timestamp}:
+		Reason: result.Reason, Level: result.Level, Timestamp: incoming.Timestamp, RejectedGUIDs: result.RejectedGUIDs}:
 	default:
 	}
 }
