@@ -683,6 +683,27 @@ Post-reset startup must log "chat decision pipeline disabled"; the pipeline
 activates only when `AGENT_TYPESAFE_API_KEY` is provisioned. Live Jev chat
 verification remains pending until the key exists.
 
+**Jev key provisioned and pipeline live (2026-10-02):** Key verified against
+the real API (HTTP 200, `jev-1.13.0`) before wiring; stored in new secret
+`playerbot-typesafe` and referenced by `secretKeyRef` — never in the spec or
+repo. Mandatory reset completed; startup logs "chat decision pipeline enabled
+model=jev-latest … threshold=0.70 audience_confidence=0.60". First mixed
+window (spanned a reset): 82 chat decisions, median Jev evaluation 150ms, 5
+communicated (all writer), 74 below-threshold, 3 low-confidence, 33
+chat_deferred and 1 chat_skipped by budget — the gate is deliberately
+conservative on ambient bot chatter. Treat as smoke evidence; a clean capture
+with the full cohort follows.
+
+**Bot count fix (owner report: "I feel like its not as many as it should be"):
+** 100 characters existed but only ~70-75 were ever online: legacy config
+`MinRandomBots = 0` / `MaxRandomBots = 100` makes the worldserver re-roll its
+online cap in `urand(0,100)` on a timer (it had rolled 75). Pinned
+`MinRandomBots = 100` in the `tocloud9-playerbots-config` secret (controller
+population owns the count; auto-randomize is off), recorded the config at
+`k8s/games/modules/tocloud9/files/playerbots.conf`, restarted through the
+mandatory clean reset. Verified: worldserver logged "100/100" and a 40-second
+NATS sample shows 100 distinct live bots.
+
 ### TASK-012 — Remove legacy autonomous AI tree (queued)
 
 **Original request:** "I dont want to keep all that old code around. I basically
