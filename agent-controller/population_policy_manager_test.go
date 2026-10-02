@@ -157,6 +157,58 @@ func TestLoadPolicyRuntime(t *testing.T) {
 	}
 }
 
+// livePlayerVicinityPolicies and liveStarterAreas are the exact JSON strings
+// deployed to the cluster for TASK-016's first canary: one player_vicinity
+// rule, 300 bots within 300 yards of every fresh online human, replenished
+// by level-1 newcomers at the closest eligible starter. Start positions come
+// from acore_world.playercreateinfo; faction encoding matches the native
+// census (1 = Alliance, 2 = Horde). This test pins the deployed strings so a
+// schema change cannot silently invalidate live configuration.
+const livePlayerVicinityPolicies = `[{"id":"vicinity","kind":"player_vicinity","target":300,"radius_yards":300,"enabled":true}]`
+
+const liveStarterAreas = `[` +
+	`{"id":"elwynn","name":"Elwynn Forest (Human start)","map_id":0,"zone_id":12,"area_id":12,"faction":1,"x":-8949.95,"y":-132.49,"z":83.53,"radius_yards":300},` +
+	`{"id":"durotar","name":"Durotar (Orc/Troll start)","map_id":1,"zone_id":14,"area_id":14,"faction":2,"x":-618.52,"y":-4251.67,"z":38.72,"radius_yards":300},` +
+	`{"id":"dun-morogh","name":"Dun Morogh (Dwarf/Gnome start)","map_id":0,"zone_id":1,"area_id":1,"faction":1,"x":-6240.32,"y":331.03,"z":382.76,"radius_yards":300},` +
+	`{"id":"teldrassil","name":"Teldrassil (Night Elf start)","map_id":1,"zone_id":141,"area_id":141,"faction":1,"x":10311.30,"y":832.46,"z":1326.41,"radius_yards":300},` +
+	`{"id":"tirisfal","name":"Tirisfal Glades (Undead start)","map_id":0,"zone_id":85,"area_id":85,"faction":2,"x":1676.71,"y":1678.31,"z":121.67,"radius_yards":300},` +
+	`{"id":"mulgore","name":"Mulgore (Tauren start)","map_id":1,"zone_id":215,"area_id":215,"faction":2,"x":-2917.58,"y":-257.98,"z":53.00,"radius_yards":300},` +
+	`{"id":"eversong","name":"Eversong Woods (Blood Elf start)","map_id":530,"zone_id":3430,"area_id":3431,"faction":2,"x":10349.60,"y":-6357.29,"z":33.40,"radius_yards":300},` +
+	`{"id":"azuremyst","name":"Azuremyst Isle (Draenei start)","map_id":530,"zone_id":3483,"area_id":3526,"faction":1,"x":-3961.64,"y":-13931.20,"z":100.62,"radius_yards":300}]`
+
+func TestLivePlayerVicinityConfiguration(t *testing.T) {
+	t.Setenv("AGENT_POPULATION_POLICIES", livePlayerVicinityPolicies)
+	t.Setenv("AGENT_POPULATION_POLICY_AREAS", liveStarterAreas)
+	t.Setenv("AGENT_POPULATION_POLICY_MAX_ONLINE", "300")
+	runtime := loadPolicyRuntime()
+	if runtime == nil {
+		t.Fatal("deployed vicinity configuration must enable policy mode")
+	}
+	if len(runtime.rules) != 1 {
+		t.Fatalf("exactly one rule expected, got %+v", runtime.rules)
+	}
+	rule := runtime.rules[0]
+	if rule.ID != "vicinity" || rule.Kind != policyKindPlayerVicinity || !rule.Enabled ||
+		rule.Target != 300 || rule.RadiusYards != 300 {
+		t.Fatalf("deployed rule drifted: %+v", rule)
+	}
+	zoneByID := map[uint32]bool{}
+	for _, area := range runtime.areas {
+		if area.ID == "" || area.ZoneID == 0 || (area.Faction != 1 && area.Faction != 2) || area.RadiusYards <= 0 {
+			t.Fatalf("deployed area incomplete: %+v", area)
+		}
+		zoneByID[area.ZoneID] = true
+	}
+	for _, zone := range []uint32{12, 14, 1, 85, 215, 141, 3430, 3483} {
+		if !zoneByID[zone] {
+			t.Fatalf("starter zone %d missing from deployed areas", zone)
+		}
+	}
+	if runtime.maxOnline != 300 {
+		t.Fatalf("deployed online cap drifted: %d", runtime.maxOnline)
+	}
+}
+
 func TestFinishPolicyCreateParsesReason(t *testing.T) {
 	m := testPopulationManager(t, 100)
 	added := policyCommitment{ID: "vic/create/1", RuleID: "vic", Kind: policyCommitCreate,

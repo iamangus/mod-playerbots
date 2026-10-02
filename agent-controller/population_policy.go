@@ -383,9 +383,14 @@ func (s *plannerState) reserveAction(kind string) bool {
 }
 
 // planPopulation is the pure planner entry point.
+// planPopulation plans one reconcile pass. validateOnly optionally marks the
+// load-time schema-validation dry run, which has no census by construction:
+// the runtime census-outage guard (a live protection) must not reject a rule
+// set there just because no observations exist yet.
 func planPopulation(rules []policyRule, areas []policyArea, bots []policyBot, humans []policyHuman,
-	commitments []policyCommitment, caps policyCaps, freshnessMs, nowMs int64) policyPlan {
+	commitments []policyCommitment, caps policyCaps, freshnessMs, nowMs int64, validateOnly ...bool) policyPlan {
 
+	validationOnly := len(validateOnly) > 0 && validateOnly[0]
 	plan := policyPlan{Status: planOK}
 	areaByID := make(map[string]policyArea, len(areas))
 	for _, area := range areas {
@@ -463,7 +468,7 @@ func planPopulation(rules []policyRule, areas []policyArea, bots []policyBot, hu
 			freshBots++
 		}
 	}
-	if anyVicinity && freshHumans == 0 && freshBots == 0 {
+	if anyVicinity && freshHumans == 0 && freshBots == 0 && !validationOnly {
 		plan.Status = planStaleCensus
 		plan.Notes = append(plan.Notes, "no fresh human or bot observations; treating population as unknown")
 		return plan

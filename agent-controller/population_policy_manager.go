@@ -91,8 +91,10 @@ func loadPolicyRuntime() *policyRuntime {
 
 	// Dry-run validation against the parsed areas; bad rules fall back to
 	// the last known good (legacy) behaviour instead of changing population.
+	// The dry run validates the rule schema without a census; census
+	// freshness stays a live reconcile concern.
 	plan := planPopulation(rules, areas, nil, nil, nil,
-		policyCaps{MaxOnline: 1, MaxActionsPerReconcile: 1}, 1000, 2000)
+		policyCaps{MaxOnline: 1, MaxActionsPerReconcile: 1}, 1000, 2000, true)
 	if plan.Status != planOK {
 		log.Printf("population policies disabled: invalid rule set: %v", plan.Notes)
 		return nil
