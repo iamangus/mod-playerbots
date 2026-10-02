@@ -3331,6 +3331,11 @@ void AgentRuntime::OnChatMessage(PlayerbotAI* botAI, uint8 type, uint32 language
     if (!IsConfigured(botAI) || m_impl->stopped)
         return;
 
+    // Temporary diagnostic: whisper-only, no message text.
+    if (type == CHAT_MSG_WHISPER)
+        LOG_INFO("playerbots.agent", "Whisper OnChatMessage bot={} sender_name={}", botAI->GetBot()->GetName(),
+                 senderName);
+
     std::ostringstream payload;
     payload << "{\"channel_type\":" << static_cast<uint32>(type) << ",\"chat_type\":\"" << ChatTypeName(type)
             << "\",\"language\":" << language << ",\"channel\":\"" << EscapeJson(channel) << "\",\"sender_guid\":\""

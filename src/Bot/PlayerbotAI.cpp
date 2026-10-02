@@ -1282,6 +1282,15 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
                         return;
                 }
 
+                // Temporary diagnostic: chat receive gap; log parse-level
+                // facts only (no message text).
+                if (msgtype == CHAT_MSG_WHISPER)
+                    LOG_INFO("playerbots.agent", "Whisper SMSG parsed bot={} sender_guid={} sender_name={} text_len={}",
+                             bot->GetName(), guid1.ToString(), name, message.size());
+                else if (msgtype == CHAT_MSG_SAY || msgtype == CHAT_MSG_YELL)
+                    LOG_INFO("playerbots.agent", "Say SMSG parsed bot={} sender={} text_len={}", bot->GetName(), name,
+                             message.size());
+
                 if (chanName == "World" && !agentConfigured)
                     return;
 

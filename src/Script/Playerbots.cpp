@@ -240,6 +240,9 @@ public:
             return true;
         }
 
+        // Temporary diagnostic: are player whispers reaching the bot path?
+        LOG_INFO("playerbots", "Whisper CanUseChat sender={} -> bot={}", player->GetName(), receiver->GetName());
+
         botAI->HandleCommand(type, msg, player);
 
         // hotfix; otherwise the server will crash when whispering logout

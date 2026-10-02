@@ -10,3 +10,5 @@ underway. Requests are checked during active sessions, not by a background watch
 ## New requests
 
 <!-- Add your requests below. -->
+
+- (2026-10-02) "Can you check my communication with Endrian? even /say and /party with him is not really working" — Peepee (Human, level 2, Elwynn) reports say/whisper/party to Endrian (Human bot, 2-5 yards away, same zone) never gets a response. Live snapshot confirms proximity and Endrian healthy; zero chat_received events of any type since 00:56. Folded into the active chat receive-gap diagnosis (TASK-011 navigation follow-up section).

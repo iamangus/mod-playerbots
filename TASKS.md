@@ -704,6 +704,16 @@ population owns the count; auto-randomize is off), recorded the config at
 mandatory clean reset. Verified: worldserver logged "100/100" and a 40-second
 NATS sample shows 100 distinct live bots.
 
+**Endrian report (owner, folded into receive-gap diagnosis):** Say AND party
+messages to Endrian (300044, Human, Elwynn, 2-5 yards from Peepee) get no
+response; live snapshot confirms proximity and a healthy bot. This widens the
+gap from whisper-only to real-player chat generally — bot-to-bot say DID
+produce `chat_received` in the probe, so the receive path works for bot
+sources. Diagnostics widened: the SMSG parse now logs say/yell as well as
+whisper (sender names/lengths only). Native rebuild running under
+`local-chat-diagnostics`; after deploy+reset, owner re-sends say/whisper to
+Endrian while the capture is live, and the parse/hook logs localize the break.
+
 **Whisper no-reply diagnosis and fix (`e12603a8`, deploying):** Owner whispered
 seven bots and got no response. Clean-window evidence: the task model still
 held `send_chat` and emitted 68 ambient dispatches in five minutes, consuming
@@ -719,6 +729,24 @@ vet pass. Controller published as `local-jev-owns-chat`
 (`1868218c…`), workload patched, saved pin matches, mandatory reset running.
 After reset: verify startup, then the owner re-whispers for end-to-end reply
 verification (pipeline decision, writer message, native chat_sent).
+
+**Whisper receive gap (native, active diagnosis):** Owner re-whispered after
+the ownership fix and again got no responses; the capture showed zero
+`chat_received` of ANY type since 00:56. Stream replay over the full retained
+hour proves whispers have never surfaced: `chat_received` totals are say:3
+(the injected probe) and party:2, with zero whisper receives despite live
+whisper `chat_sent` completions. Live probes through the bridge narrowed the
+break: `send_chat say` from Iraqi reached three nearby bots and published
+`chat_received` normally, but `send_chat whisper` to Emilton completed
+natively with no `chat_received` on the receiver — the SMSG whisper either
+never reaches the bot session hook or dies in the parse. Static review found
+no defect (packet layout matches the parser; SendDirectMessage routes through
+the hooked SendPacket; script hook passes whispers through). Added
+whisper-only temporary diagnostics at the three suspect stages
+(`OnPlayerCanUseChat` server acceptance, SMSG whisper parse, `OnChatMessage`
+entry; names/lengths only, no message text). Codestyle/format/whitespace pass.
+Native build running under `local-whisper-diagnostics`; next: publish, deploy,
+mandatory reset, re-probe, read the three log points, fix the actual break.
 
 ### TASK-012 — Remove legacy autonomous AI tree (queued)
 
