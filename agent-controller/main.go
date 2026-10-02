@@ -649,7 +649,11 @@ func main() {
 	}
 	c.chatSlots = make(chan struct{}, int(chatWorkers))
 	c.chatJobs = make(chan chatJob, int(queueCapacity))
-	c.chatEval = newTypesafeClient(cfg)
+	// A nil *typesafeClient inside an interface is non-nil, so only assign a
+	// real client; otherwise chat decisions fall back to the task model.
+	if typesafe := newTypesafeClient(cfg); typesafe != nil {
+		c.chatEval = typesafe
+	}
 	c.chatCompose = c.model
 	c.startChatWorkers(chatWorkers)
 	if c.chatEnabled() {

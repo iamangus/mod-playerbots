@@ -295,6 +295,36 @@ func TestChatSchedulingSkipsDeadCombatAndBudget(t *testing.T) {
 	}
 }
 
+func TestChatPipelineDisabledWithoutTypesafeKey(t *testing.T) {
+	a, _ := chatTestSetup(t)
+	chatEvent := event{EventID: "evt10", Type: "chat_received", Timestamp: time.Now().UnixMilli(),
+		Payload: json.RawMessage(`{"channel":"say","sender_name":"Peer","message":"hi"}`)}
+	a.owner.chatEval = nil
+	if a.scheduleChatPipeline(chatEvent) {
+		t.Fatal("pipeline scheduled without an evaluator")
+	}
+	// The production wiring must only assign a real client; a typed-nil
+	// *typesafeClient inside the interface would count as enabled.
+	nilClient := newTypesafeClient(config{typesafeEndpoint: "https://api.typesafe.ai/v1/systemone", typesafeModel: "jev-latest"})
+	if nilClient != nil {
+		t.Fatal("client constructed without an API key")
+	}
+	withKey := newTypesafeClient(config{
+		typesafeEndpoint: "https://api.typesafe.ai/v1/systemone", typesafeAPIKey: "key", typesafeModel: "jev-latest"})
+	if withKey == nil {
+		t.Fatal("client not constructed with an API key")
+	}
+	c := &controller{chatCompose: &stubChatWriter{}}
+	if client := newTypesafeClient(config{
+		typesafeEndpoint: "https://api.typesafe.ai/v1/systemone", typesafeModel: "jev-latest"}); client != nil {
+		c.chatEval = client
+	}
+	if c.chatEnabled() {
+		t.Fatal("pipeline enabled without an API key")
+	}
+	_ = a
+}
+
 func TestChatReceivedFallsBackToDecisionModelWithoutJev(t *testing.T) {
 	a, _ := chatTestSetup(t)
 	a.owner.chatEval = nil
