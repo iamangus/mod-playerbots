@@ -950,7 +950,7 @@ func (m *populationManager) reserve(zone uint32, reason string) (string, populat
 }
 
 func (m *populationManager) executeCreation(requestID string, reservation populationReservation, reason string) {
-	profile := m.owner.model.generateProfileSync(reservation.Race, reservation.Class, reservation.Role, reason)
+	profile := deterministicProfile(reservation.Race, reservation.Class, reservation.Role, reason)
 	select {
 	case <-m.stop:
 		m.releasePolicyCreate(reason)

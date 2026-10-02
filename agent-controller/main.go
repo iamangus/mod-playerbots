@@ -112,6 +112,9 @@ func loadConfig() (config, error) {
 	if cfg.modelEndpoint == "" || cfg.modelName == "" {
 		return config{}, errors.New("LLM_ENDPOINT and LLM_MODEL are required")
 	}
+	if cfg.typesafeAPIKey == "" || cfg.typesafeEndpoint == "" || cfg.typesafeModel == "" {
+		return config{}, errors.New("Jev is required for all decisions: configure AGENT_TYPESAFE_API_KEY, AGENT_TYPESAFE_ENDPOINT and AGENT_TYPESAFE_MODEL")
+	}
 	if cfg.shardCount == 0 || cfg.shardCount > eventShardCount || cfg.shardID >= cfg.shardCount {
 		return config{}, errors.New("AGENT_SHARD_ID/AGENT_SHARD_COUNT must define a valid shard assignment")
 	}
@@ -586,7 +589,6 @@ type controller struct {
 	population  *populationManager
 	actorsMu    sync.Mutex
 	actors      map[string]*actor
-	modelSlots  chan struct{}
 	modelJobs   chan decisionJob
 	chatSlots   chan struct{}
 	chatJobs    chan chatJob
@@ -664,30 +666,30 @@ func main() {
 	c := &controller{
 		cfg: cfg, instanceID: envOr("HOSTNAME", "agent-controller"),
 		nats: natsConn, jetstream: jetstream, redis: redisClient, model: newModelClient(cfg),
-		actors: make(map[string]*actor), modelSlots: make(chan struct{}, int(workers)),
+		actors:    make(map[string]*actor),
 		modelJobs: make(chan decisionJob, int(queueCapacity)),
 		owners:    make(map[string]map[uint32]time.Time),
 	}
-	c.startModelWorkers(workers)
 	chatWorkers := envUint("AGENT_CHAT_WORKERS", 8)
 	if chatWorkers == 0 {
 		chatWorkers = 1
 	}
 	c.chatSlots = make(chan struct{}, int(chatWorkers))
 	c.chatJobs = make(chan chatJob, int(queueCapacity))
-	// A nil *typesafeClient inside an interface is non-nil, so only assign a
-	// real client; otherwise chat decisions fall back to the task model.
+	// A nil *typesafeClient inside an interface is non-nil. Only install a
+	// real evaluator; startup configuration requires Jev for every decision.
 	if typesafe := newTypesafeClient(cfg); typesafe != nil {
 		c.chatEval = typesafe
 	}
 	c.chatCompose = c.model
-	c.model.setChatOwnership(c.chatEnabled())
+	c.startModelWorkers(workers)
+	log.Printf("gameplay decision pipeline enabled provider=jev model=%s workers=%d; OpenRouter is chat-writer-only", cfg.typesafeModel, workers)
 	c.startChatWorkers(chatWorkers)
 	if c.chatEnabled() {
 		log.Printf("chat decision pipeline enabled model=%s endpoint=%s threshold=%.2f audience_confidence=%.2f",
 			cfg.typesafeModel, cfg.typesafeEndpoint, cfg.chatDecisionThreshold, cfg.chatAudienceConfidence)
 	} else {
-		log.Printf("chat decision pipeline disabled: AGENT_TYPESAFE_API_KEY not set; chat falls back to the decision model")
+		log.Printf("chat decision pipeline unavailable; communication fails closed")
 	}
 	if populationCfg := loadPopulationConfig(); populationCfg.enabled {
 		c.population = newPopulationManager(c, populationCfg)
@@ -722,8 +724,13 @@ func (c *controller) startModelWorkers(count uint32) {
 			for job := range c.modelJobs {
 				started := time.Now()
 				queueWait := started.Sub(job.queuedAt)
-				call, err := c.model.decide(c.modelSlots, job.profile, job.memories,
-					job.state, job.events, job.task, job.trigger)
+				planner := &gameplayPlanner{evaluator: c.chatEval}
+				call, err := planner.decide(job)
+				selected := "continue"
+				if call != nil {
+					selected = call.Name
+				}
+				log.Printf("agent gameplay_decision provider=jev bot=%s trace_id=%s trigger=%s action=%s failed=%t", job.actor.botGUID, job.traceID, job.trigger, selected, err != nil)
 				result := event{Type: "internal_decision", decision: &decisionResult{
 					traceID: job.traceID, trigger: job.trigger, queueWait: queueWait, modelElapsed: time.Since(started),
 					revision: job.revision, call: call, err: err,
@@ -1387,8 +1394,8 @@ func (a *actor) decide(reason string) {
 		a.logDecisionBlock("missing_snapshot", reason)
 		return
 	}
-	if a.owner.cfg.modelEndpoint == "" || a.owner.cfg.modelName == "" {
-		a.logDecisionBlock("model_unconfigured", reason)
+	if a.owner.chatEval == nil {
+		a.logDecisionBlock("jev_unconfigured", reason)
 		return
 	}
 	if a.decisionPending {

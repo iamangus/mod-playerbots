@@ -16,17 +16,9 @@ type modelClient struct {
 	apiKey              string
 	model               string
 	timeout             time.Duration
-	maxTokens           uint32
 	chatWriterMaxTokens uint32
 	reasoningEffort     string
 	client              *http.Client
-	tools               []map[string]any
-	chatOwned           bool
-}
-
-type modelToolCall struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
 }
 
 func newModelClient(cfg config) *modelClient {
@@ -42,19 +34,10 @@ func newModelClient(cfg config) *modelClient {
 		apiKey:              cfg.modelAPIKey,
 		model:               cfg.modelName,
 		timeout:             cfg.requestTimeout,
-		maxTokens:           cfg.maxTokens,
 		chatWriterMaxTokens: writerTokens,
 		reasoningEffort:     cfg.reasoningEffort,
 		client:              &http.Client{Timeout: cfg.requestTimeout},
-		tools:               agentTools,
 	}
-}
-
-// setChatOwnership hands chat decisions to the communication pipeline. The
-// task model keeps every non-chat tool and is told that it cannot speak.
-func (client *modelClient) setChatOwnership(owned bool) {
-	client.chatOwned = owned
-	client.tools = taskTools(agentTools, owned)
 }
 
 // reasoningParam caps reasoning-style models. Providers that do not support
@@ -64,95 +47,6 @@ func (client *modelClient) reasoningParam() map[string]any {
 		return nil
 	}
 	return map[string]any{"effort": client.reasoningEffort}
-}
-
-func (client *modelClient) decide(slots chan struct{}, profile string, memories []string,
-	state snapshot, events []recentEvent, currentTask *task, trigger string) (*toolCall, error) {
-	select {
-	case slots <- struct{}{}:
-		defer func() { <-slots }()
-	case <-time.After(client.timeout):
-		return nil, fmt.Errorf("model concurrency limit timed out")
-	}
-
-	observation, err := json.Marshal(map[string]any{
-		"schema_version": 1,
-		"trigger":        trigger,
-		"state":          state,
-		"events":         events,
-		"current_task":   currentTask,
-		"memory":         memories,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("encode observation: %w", err)
-	}
-
-	requestBody := map[string]any{
-		"model":      client.model,
-		"max_tokens": client.maxTokens,
-		"messages": []map[string]string{
-			{"role": "system", "content": systemPrompt(profile, client.chatOwned)},
-			{"role": "user", "content": string(observation)},
-		},
-		"tools":               client.tools,
-		"tool_choice":         "auto",
-		"parallel_tool_calls": false,
-	}
-	if reasoning := client.reasoningParam(); reasoning != nil {
-		requestBody["reasoning"] = reasoning
-	}
-	body, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, fmt.Errorf("encode model request: %w", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), client.timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, client.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("create model request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if client.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+client.apiKey)
-	}
-	resp, err := client.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("model request failed: %w", err)
-	}
-	defer resp.Body.Close()
-	responseBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxLLMResponseBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("read model response: %w", err)
-	}
-	if len(responseBytes) > maxLLMResponseBytes {
-		return nil, fmt.Errorf("model response exceeded size limit")
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("model returned HTTP %d", resp.StatusCode)
-	}
-	var decoded struct {
-		Choices []struct {
-			Message struct {
-				ToolCalls []struct {
-					Function modelToolCall `json:"function"`
-				} `json:"tool_calls"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(responseBytes, &decoded); err != nil {
-		return nil, fmt.Errorf("decode model response: %w", err)
-	}
-	if len(decoded.Choices) == 0 || len(decoded.Choices[0].Message.ToolCalls) == 0 {
-		return nil, nil
-	}
-	call := decoded.Choices[0].Message.ToolCalls[0].Function
-	if call.Name == "" {
-		return nil, fmt.Errorf("model tool call has no name")
-	}
-	if call.Arguments == "" {
-		call.Arguments = "{}"
-	}
-	return &toolCall{Name: call.Name, Arguments: call.Arguments}, nil
 }
 
 // composeChat writes only the message body for an already-made communication
@@ -300,70 +194,12 @@ func systemPrompt(profile string, chatOwned bool) string {
 	return prompt
 }
 
-// generateProfileSync produces a short playstyle persona for a newly
-// provisioned bot. It falls back to a deterministic template when the model is
-// unavailable so provisioning never blocks on inference.
-func (client *modelClient) generateProfileSync(race, class uint32, role, reason string) string {
+// Initial identity is deterministic; OpenRouter is exclusively the chat writer.
+func deterministicProfile(race, class uint32, role, reason string) string {
 	fallback := fmt.Sprintf("A steady %s %s who prefers playing %s. Created to join the world (%s). "+
 		"Plays predictably, helps nearby players, and works on quests honestly.",
 		raceNames[race], classNames[class], role, strings.ReplaceAll(reason, "_", " "))
-	if client == nil || client.endpoint == "" || client.model == "" {
-		return fallback
-	}
-
-	spec := fmt.Sprintf("Create a short identity profile (2-3 sentences) for a newly created World of Warcraft "+
-		"3.3.5a character: a %s %s who will usually play as %s. Describe playstyle, priorities, and social "+
-		"temperament. Plain text only, no lists.", raceNames[race], classNames[class], role)
-	requestBody := map[string]any{
-		"model":      client.model,
-		"max_tokens": 200,
-		"messages": []map[string]string{
-			{"role": "system", "content": "You create concise, stable personas for persistent game characters. " +
-				"Keep the tone grounded and family-friendly."},
-			{"role": "user", "content": spec},
-		},
-	}
-	if reasoning := client.reasoningParam(); reasoning != nil {
-		requestBody["reasoning"] = reasoning
-	}
-	body, err := json.Marshal(requestBody)
-	if err != nil {
-		return fallback
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), client.timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, client.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return fallback
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if client.apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+client.apiKey)
-	}
-	resp, err := client.client.Do(req)
-	if err != nil {
-		return fallback
-	}
-	defer resp.Body.Close()
-	responseBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxLLMResponseBytes+1))
-	if err != nil || resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fallback
-	}
-	var decoded struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if json.Unmarshal(responseBytes, &decoded) != nil || len(decoded.Choices) == 0 {
-		return fallback
-	}
-	profile := strings.TrimSpace(decoded.Choices[0].Message.Content)
-	if profile == "" {
-		return fallback
-	}
-	return trimUTF8(profile, 600)
+	return fallback
 }
 
 var agentTools = []map[string]any{

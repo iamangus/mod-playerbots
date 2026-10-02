@@ -27,6 +27,24 @@ does not substitute for recovery, and legacy autonomous death actions stay disab
 
 ## Chat decision pipeline (TypeSafe Jev)
 
+**Jev owns all high-level decisions**, not just chat. On gameplay timer/event
+triggers it receives the same state, recent events (including chat), current task,
+profile and memories. One typed choice selects an operation or `continue`; a
+second batched typed request selects that operation's arguments from observed
+identities/items/quests, schema-defined options and bounded quantities/budgets.
+Every exposed non-chat tool is covered. Lower-level task loops execute normally
+without additional model decisions for each primitive. Invalid/unknown or
+malformed-confidence answers fail closed and never fall back to OpenRouter.
+
+OpenRouter has exactly one role: writing the text of a Jev-approved message with
+no tools. Initial profiles are deterministic; existing identities are preserved.
+`AGENT_TYPESAFE_API_KEY` is required at startup. `AGENT_MODEL_WORKERS` now bounds
+Jev gameplay decision jobs, and the existing per-bot five-second minimum decision
+gap and periodic/event scheduling remain in effect. A gameplay decision uses one
+Jev request for `continue`/parameterless operations, at most two otherwise (plus
+bounded transport retries). Argument choices are bounded projections, not claims
+of exhaustive knowledge; native/runtime guards still validate all effects.
+
 Incoming chat is decided by TypeSafe's System One model (Jev), not by the task
 model. One evaluation request carries the whole battery against a compact state
 (bot summary, current task, recent chat, enumerated candidates):
@@ -46,11 +64,11 @@ model. One evaluation request carries the whole battery against a compact state
 When the gate opens, the configured text model writes only the message body
 from a tool-free prompt; it cannot start actions. A writer failure sends the
 canned line `Sorry, I can't talk right now.` and counts against the same
-budget. Every dispatch — writer, canned, or the task model's own `send_chat` —
+budget. Every dispatch — writer or canned fallback —
 is bounded by a persisted per-bot budget (`AGENT_CHAT_MIN_INTERVAL`,
 `AGENT_CHAT_WINDOW`, `AGENT_CHAT_MAX_PER_WINDOW`). Decision metadata is logged
 without chat contents. With `AGENT_TYPESAFE_API_KEY` unset the pipeline is
-disabled and chat decisions fall back to the ordinary decision model. The task
+unavailable and production startup refuses to run without Jev. The gameplay
 decision resumes through the normal snapshot path after each pipeline result.
 
 Configuration: `AGENT_TYPESAFE_ENDPOINT` (default
@@ -64,6 +82,7 @@ The controller requires:
 - `TC9_NATS_URL`, `AGENT_STATE_REDIS_URL`, and `AGENT_SHARD_COUNT`;
 - a StatefulSet hostname ending in its numeric ordinal, used as `AGENT_SHARD_ID`;
 - `LLM_ENDPOINT`, `LLM_MODEL`, and optionally `LLM_API_KEY`;
+- `AGENT_TYPESAFE_API_KEY` for Jev gameplay and communication decisions;
 - a matching `AgentBridge.SubjectPrefix` in `playerbots.conf`.
 
 Build from this directory with `docker build -t <registry>/playerbot-agent-controller:<tag> .`.

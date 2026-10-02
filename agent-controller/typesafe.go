@@ -23,9 +23,8 @@ type typesafeClient struct {
 	client   *http.Client
 }
 
-// newTypesafeClient returns nil unless the API key is configured; the chat
-// decision pipeline then stays disabled and chat falls back to the ordinary
-// decision model exactly as before.
+// newTypesafeClient returns nil unless configured. Production startup requires
+// Jev; neither gameplay nor communication falls back to OpenRouter decisions.
 func newTypesafeClient(cfg config) *typesafeClient {
 	if cfg.typesafeAPIKey == "" || cfg.typesafeEndpoint == "" || cfg.typesafeModel == "" {
 		return nil

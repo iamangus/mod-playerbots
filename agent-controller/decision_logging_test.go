@@ -83,6 +83,7 @@ func TestDecisionQueueTracePreservesFullInput(t *testing.T) {
 	a.owner.modelJobs = make(chan decisionJob, 1)
 	a.owner.cfg.modelEndpoint = "http://unused.invalid"
 	a.owner.cfg.modelName = "test-only"
+	a.owner.chatEval = &stubChatEvaluator{}
 	a.state.Task = &task{ID: "current-task", Kind: "fishing", GoalCount: 3}
 	a.recent = []recentEvent{{Type: "chat_received", Payload: []byte(`{"message":"hello"}`), New: true}}
 	output := captureDiagnostics(t)
