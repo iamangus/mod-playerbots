@@ -4,9 +4,38 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+func TestConcurrentPolicyReceiptLinksPreserveAllCommitments(t *testing.T) {
+	m := testPopulationManager(t, 100)
+	var wg sync.WaitGroup
+	for _, id := range []string{"a", "b", "c", "d"} {
+		c := policyCommitment{ID: id, Kind: policyCommitCreate, CreatedMs: 1}
+		m.applyPolicyCommitmentOps([]policyCommitmentOp{{Op: "add", New: &c}})
+	}
+	for _, id := range []string{"a", "b", "c", "d"} {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			m.updatePolicyCommitmentBot(id, 777)
+		}(id)
+	}
+	c := policyCommitment{ID: "e", Kind: policyCommitCreate, CreatedMs: 1}
+	m.applyPolicyCommitmentOps([]policyCommitmentOp{{Op: "add", New: &c}})
+	wg.Wait()
+	live := m.loadPolicyCommitments(2, &policyRuntime{createTTL: time.Hour, arrivedTTL: time.Hour})
+	if len(live) != 5 {
+		t.Fatalf("concurrent receipts must not lose commitments: %+v", live)
+	}
+	for _, c := range live {
+		if c.ID != "e" && c.BotGUID != 777 {
+			t.Fatalf("lost receipt link: %+v", c)
+		}
+	}
+}
 
 func TestParsePolicyCensus(t *testing.T) {
 	payload := json.RawMessage(`{
@@ -129,6 +158,7 @@ func TestPolicyLogoutGraceMarkers(t *testing.T) {
 }
 
 func TestLoadPolicyRuntime(t *testing.T) {
+	t.Setenv("AGENT_POPULATION_POLICY_RECONCILE_INTERVAL", "")
 	t.Setenv("AGENT_POPULATION_POLICIES", "")
 	if loadPolicyRuntime() != nil {
 		t.Fatal("no policies env must keep legacy mode")
@@ -153,12 +183,52 @@ func TestLoadPolicyRuntime(t *testing.T) {
 	if runtime.maxOnline != 500 || runtime.logoutGrace != 5*time.Minute || runtime.maxActions != 40 {
 		t.Fatalf("unexpected defaults: %+v", runtime)
 	}
+	if runtime.reconcileInterval != 30*time.Second {
+		t.Fatalf("policy census must default to 30s, got %s", runtime.reconcileInterval)
+	}
+	t.Setenv("AGENT_POPULATION_POLICY_RECONCILE_INTERVAL", "1s")
+	if got := loadPolicyRuntime().reconcileInterval; got != 15*time.Second {
+		t.Fatalf("cadence must respect the native 15s throttle, got %s", got)
+	}
 	t.Setenv("AGENT_POPULATION_POLICY_MAX_ONLINE", "250")
 	t.Setenv("AGENT_POPULATION_POLICY_MAX_ACTIONS", "12")
 	t.Setenv("AGENT_POPULATION_POLICY_LOGOUT_GRACE", "90s")
 	runtime = loadPolicyRuntime()
 	if runtime.maxOnline != 250 || runtime.maxActions != 12 || runtime.logoutGrace != 90*time.Second {
 		t.Fatalf("env overrides not applied: %+v", runtime)
+	}
+}
+
+func TestPolicyLoginKickCoalescesAndSuppressesLegacyCohort(t *testing.T) {
+	m := testPopulationManager(t, 100)
+	m.policy = &policyRuntime{}
+	m.policyKick = make(chan struct{}, 1)
+	m.cfg.cohortEnabled = true
+	for i := 0; i < 3; i++ {
+		if err := m.handlePopulationEvent([]byte(`{"type":"player_entered_world"}`)); err != nil {
+			t.Fatal(err)
+		}
+		m.handlePlayerFirstEntry(event{})
+	}
+	if len(m.policyKick) != 1 {
+		t.Fatal("login events must coalesce into one wakeup")
+	}
+	keys, err := m.owner.redis.Keys(context.Background(), m.prefixKey("cohort:*")).Result()
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("policy mode must not create legacy cohorts: %v %v", keys, err)
+	}
+}
+
+func TestPolicyUndispatchedCreateReleasesCommitment(t *testing.T) {
+	m := testPopulationManager(t, 100)
+	m.policy = &policyRuntime{areas: []policyArea{{ID: "start", ZoneID: 12}}}
+	m.createSlot = make(chan struct{}, 1)
+	m.createSlot <- struct{}{}
+	c := policyCommitment{ID: "queued", Kind: policyCommitCreate, CreatedMs: 1}
+	m.applyPolicyCommitmentOps([]policyCommitmentOp{{Op: "add", New: &c}})
+	m.executePolicyCreate(policyAction{AreaID: "start", CommitID: c.ID})
+	if got := m.loadPolicyCommitments(2, &policyRuntime{createTTL: time.Hour}); len(got) != 0 {
+		t.Fatalf("undispatched work must not satisfy demand: %+v", got)
 	}
 }
 
@@ -225,5 +295,21 @@ func TestFinishPolicyCreateParsesReason(t *testing.T) {
 	stored := m.loadPolicyCommitments(2, &policyRuntime{createTTL: time.Hour, arrivedTTL: 24 * time.Hour})
 	if len(stored) != 1 || stored[0].BotGUID != 555 {
 		t.Fatalf("policy reason must link receipt: %+v", stored)
+	}
+}
+
+func TestRejectedPolicyAdmissionKeepsCharacterAndDemand(t *testing.T) {
+	m := testPopulationManager(t, 100)
+	for _, c := range []policyCommitment{
+		{ID: "refused", Kind: policyCommitAdmit, BotGUID: 7, CenterX: 500, Radius: 100, CreatedMs: 1},
+		{ID: "accepted", Kind: policyCommitAdmit, BotGUID: 8, CreatedMs: 1},
+	} {
+		m.applyPolicyCommitmentOps([]policyCommitmentOp{{Op: "add", New: &c}})
+	}
+	m.retryRejectedPolicyAdmissions([]uint32{7})
+	live := m.loadPolicyCommitments(2, &policyRuntime{admitTTL: time.Hour, arrivedTTL: time.Hour})
+	if len(live) != 2 || live[0].Kind != policyCommitCreate || live[0].BotGUID != 7 ||
+		live[0].CenterX != 500 || live[1].Kind != policyCommitAdmit {
+		t.Fatalf("refusal must permit retry without replacing the character or disturbing accepted admission: %+v", live)
 	}
 }

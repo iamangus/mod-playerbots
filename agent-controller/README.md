@@ -86,6 +86,15 @@ snapshot includes their results. Ordinary population and zone refills share the
 configured total target; player-triggered cohorts can add characters beyond it.
 Existing characters are preserved when a target is lowered.
 
+With `AGENT_POPULATION_POLICIES` enabled, policy planning replaces legacy
+refills and first-entry cohorts. Human logins trigger a fresh census; periodic
+census/planning defaults to 30 seconds (`AGENT_POPULATION_POLICY_RECONCILE_INTERVAL`,
+minimum 15 seconds). Profile generation runs in bounded background provisioning
+slots rather than blocking census or leader renewal. Receipt-linked newcomers
+are admitted while retaining their replenishment commitment; only a fresh online
+position inside the demand radius proves arrival. Unstarted/rejected creation
+releases demand, while a missing creation receipt remains uncertain until its TTL.
+
 With `AiPlayerbot.AgentBridge.Population.Enabled = 1`, bots exist only while a
 live agent controller is connected. A missing or stale controller heartbeat stops
 new scheduler logins, and online externally provisioned bots log out instead of

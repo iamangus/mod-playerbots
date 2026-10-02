@@ -41,6 +41,9 @@ type policyRuntime struct {
 	admitTTL   time.Duration
 	createTTL  time.Duration
 	arrivedTTL time.Duration
+	// reconcileInterval drives the periodic census+plan cadence in policy
+	// mode; login events kick an immediate reconcile on top.
+	reconcileInterval time.Duration
 }
 
 // envUintDefault returns the parsed env value or def when unset/invalid.
@@ -101,19 +104,23 @@ func loadPolicyRuntime() *policyRuntime {
 	}
 
 	runtime := &policyRuntime{
-		rules:       rules,
-		areas:       areas,
-		freshness:   envDurationDefault("AGENT_POPULATION_POLICY_FRESHNESS", 3*time.Minute),
-		maxOnline:   envUintDefault("AGENT_POPULATION_POLICY_MAX_ONLINE", 500),
-		maxPool:     envUintDefault("AGENT_POPULATION_POLICY_MAX_POOL", 0),
-		maxActions:  envUintDefault("AGENT_POPULATION_POLICY_MAX_ACTIONS", 40),
-		logoutGrace: envDurationDefault("AGENT_POPULATION_POLICY_LOGOUT_GRACE", 5*time.Minute),
-		admitTTL:    envDurationDefault("AGENT_POPULATION_POLICY_ADMIT_TTL", 30*time.Minute),
-		createTTL:   envDurationDefault("AGENT_POPULATION_POLICY_CREATE_TTL", 30*time.Minute),
-		arrivedTTL:  envDurationDefault("AGENT_POPULATION_POLICY_ARRIVED_TTL", 24*time.Hour),
+		rules:             rules,
+		areas:             areas,
+		freshness:         envDurationDefault("AGENT_POPULATION_POLICY_FRESHNESS", 3*time.Minute),
+		maxOnline:         envUintDefault("AGENT_POPULATION_POLICY_MAX_ONLINE", 500),
+		maxPool:           envUintDefault("AGENT_POPULATION_POLICY_MAX_POOL", 0),
+		maxActions:        envUintDefault("AGENT_POPULATION_POLICY_MAX_ACTIONS", 40),
+		logoutGrace:       envDurationDefault("AGENT_POPULATION_POLICY_LOGOUT_GRACE", 5*time.Minute),
+		admitTTL:          envDurationDefault("AGENT_POPULATION_POLICY_ADMIT_TTL", 30*time.Minute),
+		createTTL:         envDurationDefault("AGENT_POPULATION_POLICY_CREATE_TTL", 30*time.Minute),
+		arrivedTTL:        envDurationDefault("AGENT_POPULATION_POLICY_ARRIVED_TTL", 24*time.Hour),
+		reconcileInterval: envDurationDefault("AGENT_POPULATION_POLICY_RECONCILE_INTERVAL", 30*time.Second),
 	}
 	if runtime.freshness < time.Minute {
 		runtime.freshness = time.Minute
+	}
+	if runtime.reconcileInterval < 15*time.Second {
+		runtime.reconcileInterval = 15 * time.Second
 	}
 	if runtime.maxActions < 1 {
 		runtime.maxActions = 1
@@ -254,12 +261,50 @@ func (m *populationManager) requestPolicyGuids(operation string, guids []string)
 	}
 	select {
 	case result := <-wait:
+		if operation == "population_policy_admit_bots" {
+			m.retryRejectedPolicyAdmissions(result.RejectedGUIDs)
+		}
 		return result.Status == "completed"
 	case <-time.After(30 * time.Second):
 		log.Printf("%s timed out (request %s)", operation, requestID)
 		return false
 	case <-m.stop:
 		return false
+	}
+}
+
+// An explicit refusal reopens admission without losing the created character
+// or its outstanding demand. Missing receipts remain pending instead.
+func (m *populationManager) retryRejectedPolicyAdmissions(guids []uint32) {
+	if len(guids) == 0 {
+		return
+	}
+	m.policyStoreMu.Lock()
+	defer m.policyStoreMu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	key := m.prefixKey("policy:commitments")
+	data, err := m.owner.redis.Get(ctx, key).Bytes()
+	if err != nil {
+		return
+	}
+	var stored []policyCommitment
+	if json.Unmarshal(data, &stored) != nil {
+		return
+	}
+	for i := range stored {
+		for _, guid := range guids {
+			if stored[i].BotGUID == guid && stored[i].Kind == policyCommitAdmit {
+				stored[i].Kind = policyCommitCreate
+				stored[i].CreatedMs = time.Now().UnixMilli()
+			}
+		}
+	}
+	encoded, err := json.Marshal(stored)
+	if err == nil {
+		if err := m.owner.redis.Set(ctx, key, encoded, 0).Err(); err != nil {
+			log.Printf("persist rejected policy admissions: %v", err)
+		}
 	}
 }
 
@@ -304,6 +349,8 @@ func (m *populationManager) loadPolicyCommitments(nowMs int64, runtime *policyRu
 // applyPolicyCommitmentOps persists plan commitment mutations verbatim;
 // planner IDs are already unique per reconcile.
 func (m *populationManager) applyPolicyCommitmentOps(ops []policyCommitmentOp) {
+	m.policyStoreMu.Lock()
+	defer m.policyStoreMu.Unlock()
 	if len(ops) == 0 {
 		return
 	}
@@ -347,6 +394,8 @@ func (m *populationManager) applyPolicyCommitmentOps(ops []policyCommitmentOp) {
 
 // updatePolicyCommitmentBot records the created character on its commitment.
 func (m *populationManager) updatePolicyCommitmentBot(commitID string, guid uint32) {
+	m.policyStoreMu.Lock()
+	defer m.policyStoreMu.Unlock()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	key := m.prefixKey("policy:commitments")
@@ -366,6 +415,10 @@ func (m *populationManager) updatePolicyCommitmentBot(commitID string, guid uint
 		}
 	}
 	if !changed {
+		// A receipt without its commitment means the link would be lost;
+		// surface it instead of silently dropping the created character's
+		// arrival evidence.
+		log.Printf("policy creation receipt for %d: no matching pending commitment %q", guid, commitID)
 		return
 	}
 	encoded, err := json.Marshal(stored)
@@ -503,9 +556,39 @@ func (m *populationManager) executePolicyCreate(action policyAction) {
 	}
 	if zone == 0 {
 		log.Printf("policy create for unknown area %q skipped", action.AreaID)
+		m.applyPolicyCommitmentOps([]policyCommitmentOp{{Op: "release", ID: action.CommitID}})
 		return
 	}
-	m.createBot(zone, "policy:"+action.CommitID)
+	// Profile generation and creation receipts must not block census, login
+	// triggers or leader renewal. Bound in-flight work by the existing slots;
+	// unstarted work releases its reservation and is replanned next census.
+	reason := "policy:" + action.CommitID
+	select {
+	case <-m.stop:
+		m.releasePolicyCreate(reason)
+		return
+	case m.createSlot <- struct{}{}:
+	default:
+		m.releasePolicyCreate(reason)
+		return
+	}
+	go func() {
+		defer func() { <-m.createSlot }()
+		requestID, reservation, ok := m.reserve(zone, reason)
+		if !ok {
+			m.releasePolicyCreate(reason)
+			return
+		}
+		m.executeCreation(requestID, reservation, reason)
+	}()
+}
+
+// Only definite non-dispatch/rejection releases demand. A missing receipt
+// remains uncertain until its TTL, avoiding duplicate character creation.
+func (m *populationManager) releasePolicyCreate(reason string) {
+	if strings.HasPrefix(reason, "policy:") {
+		m.applyPolicyCommitmentOps([]policyCommitmentOp{{Op: "release", ID: strings.TrimPrefix(reason, "policy:")}})
+	}
 }
 
 // finishPolicyCreate links a successful creation receipt to its commitment.

@@ -607,15 +607,21 @@ struct AgentPopulation::Impl
         }
         uint32 admitted = 0;
         uint32 rejected = 0;
+        std::ostringstream rejectedGuids;
         for (auto const& entry : *guids)
         {
             if (sRandomPlayerbotMgr.AdmitManagedBot(entry.second.get_value<uint32>()))
                 ++admitted;
             else
-                ++rejected;
+            {
+                if (rejected++)
+                    rejectedGuids << ",";
+                rejectedGuids << entry.second.get_value<uint32>();
+            }
         }
         std::ostringstream payload;
-        payload << "{\"status\":\"completed\",\"admitted\":" << admitted << ",\"rejected\":" << rejected << "}";
+        payload << "{\"status\":\"completed\",\"admitted\":" << admitted << ",\"rejected\":" << rejected
+                << ",\"rejected_guids\":[" << rejectedGuids.str() << "]}";
         CacheAndPublish(requestId, payload.str());
     }
 
@@ -815,6 +821,15 @@ void AgentPopulation::OnPlayerLogin(Player* player)
         return;
     if (player->GetSession()->IsBot())
         return;
+
+    // Every human world entry wakes the policy director so vicinity demand
+    // registers immediately instead of waiting for the periodic census.
+    std::ostringstream entered;
+    entered << "{\"player_guid\":\"" << player->GetGUID().GetCounter() << "\",\"name\":\""
+            << agent_bridge::EscapeJson(player->GetName()) << "\"}";
+    if (!m_impl->PublishEvent("player_entered_world", "", entered.str()))
+        LOG_WARN("playerbots.agent", "Failed to publish player_entered_world for {}", player->GetName().c_str());
+
     if (player->GetLevel() > sPlayerbotAIConfig.agentBridgePlayerCohortMaxLevel)
         return;
 

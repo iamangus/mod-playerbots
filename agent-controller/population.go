@@ -179,12 +179,13 @@ type botRecord struct {
 }
 
 type populationEventResult struct {
-	Timestamp int64  `json:"-"`
-	Status    string `json:"status"`
-	GUID      uint32 `json:"guid"`
-	Name      string `json:"name"`
-	Reason    string `json:"reason"`
-	Level     uint32 `json:"level"`
+	Timestamp     int64    `json:"-"`
+	Status        string   `json:"status"`
+	GUID          uint32   `json:"guid"`
+	Name          string   `json:"name"`
+	Reason        string   `json:"reason"`
+	Level         uint32   `json:"level"`
+	RejectedGUIDs []uint32 `json:"rejected_guids"`
 }
 
 type populationManager struct {
@@ -200,6 +201,8 @@ type populationManager struct {
 	pendingCensusMu sync.Mutex
 	pendingCensus   map[string]chan policyCensus
 	createSlot      chan struct{}
+	policyKick      chan struct{}
+	policyStoreMu   sync.Mutex
 	stop            chan struct{}
 	stopOnce        sync.Once
 	ownerMu         sync.Mutex
@@ -216,6 +219,7 @@ func newPopulationManager(owner *controller, cfg populationConfig) *populationMa
 		pending:       make(map[string]chan populationEventResult),
 		pendingCensus: make(map[string]chan policyCensus),
 		createSlot:    make(chan struct{}, cfg.maxConcurrent),
+		policyKick:    make(chan struct{}, 1),
 		stop:          make(chan struct{}),
 	}
 }
@@ -264,7 +268,11 @@ func (m *populationManager) run() {
 
 	snapshotTicker := time.NewTicker(m.cfg.snapshotInterval)
 	defer snapshotTicker.Stop()
-	refillTicker := time.NewTicker(m.cfg.refillInterval)
+	reconcileInterval := m.cfg.refillInterval
+	if m.policy != nil {
+		reconcileInterval = m.policy.reconcileInterval
+	}
+	refillTicker := time.NewTicker(reconcileInterval)
 	defer refillTicker.Stop()
 	leaderTicker := time.NewTicker(20 * time.Second)
 	defer leaderTicker.Stop()
@@ -282,6 +290,12 @@ func (m *populationManager) run() {
 					m.policyReconcile()
 				} else {
 					m.reconcile()
+				}
+			}
+		case <-m.policyKick:
+			if m.leaderLeaseHeld() || m.acquireLeaderLease() {
+				if m.policy != nil {
+					m.policyReconcile()
 				}
 			}
 		case <-leaderTicker.C:
@@ -363,6 +377,15 @@ func (m *populationManager) handlePopulationEvent(data []byte) error {
 		m.owner.noteOwnedShards(incoming.OwnerToken)
 	case "player_first_entry":
 		m.handlePlayerFirstEntry(incoming)
+	case "player_entered_world":
+		// Every human world entry wakes the policy director; the kick is
+		// coalesced so a login storm cannot queue repeated reconciles.
+		if m.policy != nil {
+			select {
+			case m.policyKick <- struct{}{}:
+			default:
+			}
+		}
 	case "population_result":
 		m.handlePopulationResult(incoming)
 	}
@@ -370,6 +393,15 @@ func (m *populationManager) handlePopulationEvent(data []byte) error {
 }
 
 func (m *populationManager) handlePlayerFirstEntry(incoming event) {
+	if m.policy != nil {
+		// Policy mode owns population planning; a first entry is just
+		// another demand trigger there.
+		select {
+		case m.policyKick <- struct{}{}:
+		default:
+		}
+		return
+	}
 	if !m.cfg.cohortEnabled {
 		return
 	}
@@ -870,12 +902,13 @@ func (m *populationManager) reserve(zone uint32, reason string) (string, populat
 		cancel()
 	}
 	counts := m.effectiveCounts()
-	if counts == nil || (reason != "player_cohort" && !strings.HasPrefix(reason, "policy:") &&
-		m.cfg.targetTotal != 0 && counts.Total >= uint64(m.cfg.targetTotal)) {
+	if counts == nil {
+		log.Printf("population: no usable population counts; refusing %s creation", reason)
 		unlock()
 		return "", populationReservation{}, false
 	}
-	if !m.consumeHourlyBudget() {
+	if reason != "player_cohort" && !strings.HasPrefix(reason, "policy:") &&
+		m.cfg.targetTotal != 0 && counts.Total >= uint64(m.cfg.targetTotal) {
 		unlock()
 		return "", populationReservation{}, false
 	}
@@ -883,6 +916,10 @@ func (m *populationManager) reserve(zone uint32, reason string) (string, populat
 	if !ok {
 		unlock()
 		log.Printf("population: no valid race/class allocation (zone %d, reason %s)", zone, reason)
+		return "", populationReservation{}, false
+	}
+	if !m.consumeHourlyBudget() {
+		unlock()
 		return "", populationReservation{}, false
 	}
 	role := m.chooseRole(class, counts)
@@ -910,10 +947,17 @@ func (m *populationManager) reserve(zone uint32, reason string) (string, populat
 
 func (m *populationManager) executeCreation(requestID string, reservation populationReservation, reason string) {
 	profile := m.owner.model.generateProfileSync(reservation.Race, reservation.Class, reservation.Role, reason)
+	select {
+	case <-m.stop:
+		m.releasePolicyCreate(reason)
+		return
+	default:
+	}
 
 	owner := m.activeOwnerToken()
 	if owner == "" {
 		log.Printf("population: no active worldserver owner; dropping %s creation", reason)
+		m.releasePolicyCreate(reason)
 		return
 	}
 
@@ -937,10 +981,12 @@ func (m *populationManager) executeCreation(requestID string, reservation popula
 		},
 	})
 	if err != nil {
+		m.releasePolicyCreate(reason)
 		return
 	}
 	if err := m.owner.nats.Publish(m.owner.cfg.subjectPrefix+".population.commands."+owner, body); err != nil {
 		log.Printf("publish create_bot_character: %v", err)
+		m.releasePolicyCreate(reason)
 		return
 	}
 
@@ -960,6 +1006,7 @@ func (m *populationManager) finishCreation(requestID string, reservation populat
 	if result.Status != "created" || result.GUID == 0 {
 		_ = m.owner.redis.Del(ctx, m.prefixKey("resv:"+requestID)).Err()
 		log.Printf("population: creation rejected (%s): %s", result.Status, result.Reason)
+		m.releasePolicyCreate(reason)
 		return
 	}
 	reservation.ConfirmedAt = result.Timestamp

@@ -4,6 +4,59 @@ import (
 	"testing"
 )
 
+func TestVicinityCreatedOfflineBotAdmissionLifecycle(t *testing.T) {
+	rules := []policyRule{{ID: "vic", Kind: policyKindPlayerVicinity, Enabled: true, Target: 1, RadiusYards: 100}}
+	areas := []policyArea{policyTestArea("start", 0, 1, 0, 0)}
+	humans := []policyHuman{policyTestHuman(42, 500, 0, 1000), policyTestHuman(43, 500, 0, 1000)}
+	caps := testCaps(1, 10, 0, 10)
+	created := planPopulation(rules, areas, nil, humans, nil, caps, policyTestFreshnessMs, 1000)
+	live := liveFromPlan(nil, created)
+	if len(live) != 1 || countActions(created, policyActionCreate) != 1 {
+		t.Fatalf("overlapping humans must share one creation: %+v", created)
+	}
+	waiting := planPopulation(rules, areas, nil, humans, live, caps, policyTestFreshnessMs, 1001)
+	if len(waiting.Actions) != 0 {
+		t.Fatal("pending receipt must prevent duplicate replenishment")
+	}
+	live[0].BotGUID = 7
+	bots := []policyBot{policyTestBot(7, false, 0, 0, 1)}
+	caps.PoolSize = 1
+	admit := planPopulation(rules, areas, bots, humans, live, caps, policyTestFreshnessMs, 1002)
+	if countActions(admit, policyActionAdmit) != 1 || countActions(admit, policyActionCreate) != 0 ||
+		admit.Statuses[0].Observed != 0 || admit.Statuses[0].Committed != 1 {
+		t.Fatalf("created offline newcomer must admit without false arrival: %+v", admit)
+	}
+	live = liveFromPlan(live, admit)
+	repeat := planPopulation(rules, areas, bots, humans, live, caps, policyTestFreshnessMs, 1003)
+	if len(repeat.Actions) != 0 {
+		t.Fatal("pending admission must not dispatch again or replenish")
+	}
+	bots[0].Online = true
+	bots[0].X = 500
+	arrived := planPopulation(rules, areas, bots, humans, live, caps, policyTestFreshnessMs, 1004)
+	if arrived.Statuses[0].Observed != 1 || len(liveFromPlan(live, arrived)) != 0 || len(arrived.Actions) != 0 {
+		t.Fatalf("online arrival must release reservation and count once: %+v", arrived)
+	}
+}
+
+func TestVicinityLinkedCreationDoesNotAdmitWithoutDemandOrHeadroom(t *testing.T) {
+	rules := []policyRule{{ID: "vic", Kind: policyKindPlayerVicinity, Enabled: true, Target: 1, RadiusYards: 100}}
+	bots := []policyBot{policyTestBot(7, false, 0, 0, 1)}
+	commitments := []policyCommitment{{ID: "create", RuleID: "vic", Kind: policyCommitCreate,
+		BotGUID: 7, Radius: 100, CreatedMs: 1000}}
+	for _, humans := range [][]policyHuman{nil, {policyTestHuman(42, 0, 0, 1000)}} {
+		censusBots := append([]policyBot(nil), bots...)
+		if len(humans) > 0 {
+			censusBots = append(censusBots, policyTestBot(8, true, 500, 0, 1))
+		}
+		plan := planPopulation(rules, nil, censusBots, humans, commitments,
+			testCaps(1, 10, uint32(len(censusBots)), 10), policyTestFreshnessMs, 1001)
+		if countActions(plan, policyActionAdmit) != 0 {
+			t.Fatalf("no demand/headroom must not admit: %+v", plan)
+		}
+	}
+}
+
 // Census and fixture helpers. Coordinates are abstract test values, not
 // asserted game geography.
 

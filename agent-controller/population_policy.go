@@ -507,8 +507,8 @@ func planPopulation(rules []policyRule, areas []policyArea, bots []policyBot, hu
 		}
 	}
 
-	// Logout pass first: unclaimed idle bots free online headroom for the
-	// demand pass in the same plan.
+	// Logout pass first records pause candidates. Their grace period and native
+	// completion must be observed before they free online headroom.
 	s.planLogouts(enabled, bots, humans, freshnessMs, nowMs)
 
 	// Demand pass in deterministic priority order.
@@ -657,12 +657,12 @@ func commitCovered(c *policyCommitment, mapID uint32, instanceID uint32, x, y fl
 
 // canAdmit enforces the hard online ceiling for one reused bot.
 func (s *plannerState) canAdmit(caps policyCaps) bool {
-	return s.onlineNow-s.logoutPlanned+s.admitPlanned+s.createPlanned+1 <= caps.MaxOnline
+	return s.onlineNow+s.admitPlanned+s.createPlanned+1 <= caps.MaxOnline
 }
 
 // canCreate enforces the hard online and pool ceilings for one newcomer.
 func (s *plannerState) canCreate(caps policyCaps) bool {
-	if s.onlineNow-s.logoutPlanned+s.admitPlanned+s.createPlanned+1 > caps.MaxOnline {
+	if s.onlineNow+s.admitPlanned+s.createPlanned+1 > caps.MaxOnline {
 		return false
 	}
 	if caps.MaxPool > 0 && caps.PoolSize+s.createPlanned+1 > caps.MaxPool {
@@ -815,6 +815,49 @@ func (s *plannerState) planVicinityRule(r *policyRule, humans []policyHuman, bot
 	type playerDemand struct {
 		h       *policyHuman
 		deficit int64
+	}
+	// Creation reserves demand, not an online slot. Once its receipt identifies
+	// an offline character, admit it even when reservations cover the target.
+	// Keep the original geometry so this transition neither double-counts nor
+	// pretends that a newcomer at a distant starter has reached the player.
+	for i, c := range s.live {
+		if c.RuleID != r.ID || c.Kind != policyCommitCreate || c.BotGUID == 0 {
+			continue
+		}
+		b := s.botByGUID[c.BotGUID]
+		if b == nil || b.Online || !botEligible(r, b) {
+			continue
+		}
+		needed := false
+		for _, h := range humans {
+			if h.Online && h.ObservedMs > 0 && nowMs-h.ObservedMs <= freshnessMs &&
+				commitCovered(c, h.MapID, h.InstanceID, h.X, h.Y) {
+				needed = true
+				break
+			}
+		}
+		if !needed {
+			continue
+		}
+		otherClaim := false
+		for _, other := range s.live {
+			if other != c && other.BotGUID == b.GUID {
+				otherClaim = true
+				break
+			}
+		}
+		if otherClaim || !s.canAdmit(caps) || !s.reserveAction(policyActionAdmit) {
+			continue
+		}
+		next := *c
+		next.Kind = policyCommitAdmit
+		next.CreatedMs = s.now
+		s.ops = append(s.ops, policyCommitmentOp{Op: "release", ID: c.ID},
+			policyCommitmentOp{Op: "add", New: &next})
+		s.live[i] = &next
+		s.actions = append(s.actions, policyAction{Kind: policyActionAdmit, RuleID: r.ID,
+			BotGUID: b.GUID, PlayerGUID: c.PlayerGUID, CommitID: c.ID,
+			Reason: "admit receipt-linked newcomer while preserving replenishment coverage"})
 	}
 	demands := make([]playerDemand, 0, len(humans))
 	for i := range humans {
