@@ -400,7 +400,25 @@ type snapshot struct {
 	CachedAuctionItems []auctionCatalogSummary  `json:"cached_auction_items,omitempty"`
 	PendingAuctionBids []auctionBid             `json:"pending_auction_bids,omitempty"`
 	SocialProgression  *socialProgressionPolicy `json:"social_progression,omitempty"`
-	Inventory          struct {
+	Equipped           []struct {
+		Slot   uint32 `json:"slot"`
+		ItemID uint32 `json:"item_id"`
+		Name   string `json:"name"`
+	} `json:"equipped,omitempty"`
+	Guild *struct {
+		Name string `json:"name"`
+		Rank string `json:"rank"`
+	} `json:"guild,omitempty"`
+	Abilities    []string `json:"abilities,omitempty"`
+	Hearthstone  string   `json:"hearthstone_area,omitempty"`
+	FlightPaths  []string `json:"flight_paths,omitempty"`
+	BagSlotsFree uint32   `json:"bag_slots_free,omitempty"`
+	MailCount    uint32   `json:"mail_count,omitempty"`
+	Reputations  []struct {
+		Faction  string `json:"faction"`
+		Standing int32  `json:"standing"`
+	} `json:"reputations,omitempty"`
+	Inventory struct {
 		MoneyCopper     uint32          `json:"money_copper"`
 		TradeableStacks json.RawMessage `json:"tradeable_stacks,omitempty"`
 		Items           []struct {

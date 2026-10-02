@@ -29,6 +29,7 @@ using boost::placeholders::_1;
 #include "GameObject.h"
 #include "GameTime.h"
 #include "Group.h"
+#include "GuildMgr.h"
 #include "Item.h"
 #include "ItemPackets.h"
 #include "LootMgr.h"
@@ -95,6 +96,9 @@ constexpr uint32 AGENT_MAX_AVAILABLE_QUESTS_PER_GIVER = 3;
 constexpr uint32 AGENT_MAX_QUEST_ITEM_SOURCES = 32;
 constexpr uint32 AGENT_RECOVERY_TIMEOUT_MS = 15 * MINUTE * IN_MILLISECONDS;
 constexpr uint32 AGENT_MAX_VENDOR_OFFERS_PER_NPC = 12;
+constexpr uint32 AGENT_MAX_ACTION_BAR_ABILITIES = 30;
+constexpr uint32 AGENT_MAX_FLIGHT_PATHS = 24;
+constexpr uint32 AGENT_MAX_REPUTATIONS = 12;
 constexpr uint32 AGENT_MAX_CRAFTING_RECIPES = 40;
 constexpr uint32 AGENT_MAX_OBSERVED_DROP_ITEMS = 12;
 constexpr uint32 AGENT_MAX_CRAFTING_QUERY_DEPTH = 8;
@@ -1362,7 +1366,135 @@ struct AgentRuntime::Impl
                 ++fromThisGiver;
             }
         }
-        result << "]}";
+        result << "]";
+
+        // Equipped gear: what the character is wearing, distinct from what
+        // it carries in bags. Fixed slot order, no truncation needed.
+        result << ",\"equipped\":[";
+        bool firstEquipped = true;
+        for (uint8 slot = 0; slot < EQUIPMENT_SLOT_END; ++slot)
+        {
+            Item const* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            if (!item)
+                continue;
+            if (!firstEquipped)
+                result << ",";
+            firstEquipped = false;
+            result << "{\"slot\":" << static_cast<uint32>(slot) << ",\"item_id\":" << item->GetEntry() << ",\"name\":\""
+                   << EscapeJson(item->GetTemplate()->Name1) << "\"}";
+        }
+        result << "]";
+
+        // Guild membership, if any; absence stays explicit null.
+        if (uint32 const guildId = bot->GetGuildId())
+        {
+            Guild const* guild = sGuildMgr->GetGuildById(guildId);
+            Guild::Member const* member = guild ? guild->GetMember(bot->GetGUID()) : nullptr;
+            Guild::RankInfo const* rank = guild && member ? guild->GetRankInfo(member->GetRankId()) : nullptr;
+            if (guild && member && rank)
+                result << ",\"guild\":{\"name\":\"" << EscapeJson(guild->GetName()) << "\",\"rank\":\""
+                       << EscapeJson(rank->GetName()) << "\"}";
+            else
+                result << ",\"guild\":null";
+        }
+        else
+            result << ",\"guild\":null";
+
+        // Action-bar abilities: the spells this character actually uses,
+        // bounded and de-duplicated; "can you heal" answers from here.
+        result << ",\"abilities\":[";
+        {
+            bool firstAbility = true;
+            std::set<std::string> abilityNames;
+            for (uint8 button = 0; button < MAX_ACTION_BUTTONS && abilityNames.size() < AGENT_MAX_ACTION_BAR_ABILITIES;
+                 ++button)
+            {
+                ActionButton const* action = bot->GetActionButton(button);
+                if (!action || action->GetType() != ACTION_BUTTON_SPELL)
+                    continue;
+                SpellInfo const* spell = sSpellMgr->GetSpellInfo(action->GetAction());
+                if (!spell || !bot->HasSpell(action->GetAction()) || !spell->SpellName[0])
+                    continue;
+                std::string const abilityName = spell->SpellName[0];
+                if (!abilityNames.insert(abilityName).second)
+                    continue;
+                if (!firstAbility)
+                    result << ",";
+                firstAbility = false;
+                result << "\"" << EscapeJson(abilityName) << "\"";
+            }
+            result << "]";
+        }
+
+        // Hearthstone bind location, when the character has one.
+        std::string hearthstoneArea;
+        if (uint16 const homebindAreaId = bot->GetHomebindAreaId())
+            if (AreaTableEntry const* homebindArea = GetAreaEntryByAreaID(homebindAreaId))
+                if (homebindArea->area_name[0])
+                    hearthstoneArea = homebindArea->area_name[0];
+        result << ",\"hearthstone_area\":\"" << EscapeJson(hearthstoneArea) << "\"";
+
+        // Known flight paths, node-ID order, bounded.
+        result << ",\"flight_paths\":[";
+        {
+            bool firstPath = true;
+            uint32 pathCount = 0;
+            for (uint32 nodeId = 1; nodeId < sTaxiNodesStore.GetNumRows() && pathCount < AGENT_MAX_FLIGHT_PATHS;
+                 ++nodeId)
+            {
+                if (!bot->m_taxi.IsTaximaskNodeKnown(nodeId))
+                    continue;
+                TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(nodeId);
+                if (!node || !node->name[0])
+                    continue;
+                if (!firstPath)
+                    result << ",";
+                firstPath = false;
+                result << "\"" << EscapeJson(node->name[0]) << "\"";
+                ++pathCount;
+            }
+            result << "]";
+        }
+
+        result << ",\"bag_slots_free\":" << bot->GetFreeInventorySpace() << ",\"mail_count\":" << bot->GetMailSize();
+
+        // Notable reputations: most extreme standings first, hidden
+        // factions excluded, bounded.
+        result << ",\"reputations\":[";
+        {
+            std::vector<std::pair<int32, FactionState const*>> notable;
+            for (auto const& [listId, state] : bot->GetReputationMgr().GetStateList())
+            {
+                if (state.Flags & FACTION_FLAG_HIDDEN)
+                    continue;
+                notable.emplace_back(state.Standing, &state);
+            }
+            std::sort(notable.begin(), notable.end(),
+                      [](auto const& left, auto const& right)
+                      {
+                          if (std::abs(left.first) != std::abs(right.first))
+                              return std::abs(left.first) > std::abs(right.first);
+                          return left.second->ID < right.second->ID;
+                      });
+            bool firstRep = true;
+            uint32 repCount = 0;
+            for (auto const& [standing, state] : notable)
+            {
+                if (repCount >= AGENT_MAX_REPUTATIONS)
+                    break;
+                FactionEntry const* faction = sFactionStore.LookupEntry(state->ID);
+                if (!faction || !faction->name[0])
+                    continue;
+                if (!firstRep)
+                    result << ",";
+                firstRep = false;
+                result << "{\"faction\":\"" << EscapeJson(faction->name[0]) << "\",\"standing\":" << standing << "}";
+                ++repCount;
+            }
+            result << "]";
+        }
+
+        result << "}";
         return result.str();
     }
 

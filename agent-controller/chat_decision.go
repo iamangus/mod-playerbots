@@ -45,11 +45,12 @@ type chatComposeRequest struct {
 	Audience  string // person name, empty for broadcast
 	GroupSize uint32
 	Chats     []chatMessageInfo
-	// Money and CurrentTask are always provided as facts the character
-	// knows. Sections carries only the Jev-selected optional material;
-	// Guidance names that selection for reply intents so the writer
-	// answers the actual question instead of paraphrasing it.
+	// Money, Character and CurrentTask are always provided as facts the
+	// character knows. Sections carries only the Jev-selected optional
+	// groups; Guidance names that selection for reply intents so the
+	// writer answers the actual question instead of paraphrasing it.
 	Money       string
+	Character   string
 	CurrentTask string
 	Sections    map[string]string
 	Guidance    string
@@ -70,63 +71,143 @@ type chatJob struct {
 	context        *chatContextMaterial
 }
 
-// chatContextSections are the optional writer-context sections Jev may
-// request; parsed answers are validated against this allowlist.
-var chatContextSections = []string{"inventory", "quests", "skills", "past_tasks"}
+// chatContextGroups are the optional writer-context groups Jev may request;
+// parsed answers are validated against this allowlist. Groups keep the
+// decision battery small while covering anything a player might ask about:
+// possessions, abilities, quests, surroundings, activity detail, social and
+// economy.
+var chatContextGroups = []string{
+	"possessions", "abilities", "quests", "surroundings",
+	"activity_detail", "social", "economy",
+}
 
 // chatContextMaterial holds deterministic bounded gameplay-context slices
 // pre-materialized on the actor; chat workers only pick from these, so no
-// model call and no live state read happens during composition.
+// model call and no live state read happens during composition. Money, the
+// character line and the current activity are always-on; groups stay empty
+// until Jev selects them for one message.
 type chatContextMaterial struct {
-	Money       string `json:"money,omitempty"`
-	CurrentTask string `json:"current_task,omitempty"`
-	Inventory   string `json:"inventory,omitempty"`
-	Quests      string `json:"quests,omitempty"`
-	Skills      string `json:"skills,omitempty"`
-	PastTasks   string `json:"past_tasks,omitempty"`
+	Money     string `json:"money,omitempty"`
+	Character string `json:"character,omitempty"`
+	Activity  string `json:"activity,omitempty"`
+
+	Possessions    string `json:"possessions,omitempty"`
+	Abilities      string `json:"abilities,omitempty"`
+	Quests         string `json:"quests,omitempty"`
+	Surroundings   string `json:"surroundings,omitempty"`
+	ActivityDetail string `json:"activity_detail,omitempty"`
+	Social         string `json:"social,omitempty"`
+	Economy        string `json:"economy,omitempty"`
 }
 
 const (
-	chatContextItemLimit    = 10
-	chatContextQuestLimit   = 5
-	chatContextTaskLimit    = 5
-	chatContextSectionBytes = 400
+	chatContextItemLimit     = 10
+	chatContextRecipeLimit   = 8
+	chatContextQuestLimit    = 5
+	chatContextNearbyLimit   = 5
+	chatContextTaskLimit     = 5
+	chatContextMemoryLimit   = 3
+	chatContextVendorLimit   = 5
+	chatContextMaterialLimit = 5
+	chatContextSectionBytes  = 400
 )
 
+// joinCapped joins deterministic parts into one capped section string.
+func joinCapped(parts []string, capBytes int) string {
+	joined := strings.Join(parts, "; ")
+	if len(joined) <= capBytes {
+		return joined
+	}
+	for len(parts) > 1 {
+		parts = parts[:len(parts)-1]
+		joined = strings.Join(parts, "; ")
+		if len(joined) <= capBytes {
+			break
+		}
+	}
+	return trimUTF8(joined, capBytes)
+}
+
+// moneyLine formats the character's wealth in gold/silver/copper.
+func moneyLine(copper uint32) string {
+	if copper > 0 {
+		return fmt.Sprintf("%d gold, %d silver, %d copper", copper/10000, (copper/100)%100, copper%100)
+	}
+	return "no money"
+}
+
 // buildChatContext materializes the bounded gameplay slices from the latest
-// snapshot and actor state. Money and the current activity are always-on;
-// the optional sections stay empty until Jev selects them for one message.
+// snapshot and actor state.
 func (a *actor) buildChatContext() *chatContextMaterial {
 	material := &chatContextMaterial{}
+	material.Money = moneyLine(a.latest.Inventory.MoneyCopper)
 
-	copper := a.latest.Inventory.MoneyCopper
-	if copper > 0 {
-		material.Money = fmt.Sprintf("%d gold, %d silver, %d copper",
-			copper/10000, (copper/100)%100, copper%100)
-	} else {
-		material.Money = "no money"
-	}
+	material.Character = joinCapped(characterParts(a.latest), chatContextSectionBytes)
 
 	if task := a.state.Task; task != nil {
 		current := strings.TrimSpace(task.Kind)
 		if task.TargetName != "" {
 			current += " " + task.TargetName
 		}
-		material.CurrentTask = current
+		if task.GoalCount > 0 {
+			current += fmt.Sprintf(" (%d/%d)", task.Completed, task.GoalCount)
+		}
+		material.Activity = current
 	} else if travel := a.latest.TravelTarget; travel != nil && travel.IsTraveling && travel.DestinationName != "" {
-		material.CurrentTask = "traveling to " + travel.DestinationName
+		material.Activity = "traveling to " + travel.DestinationName
 	}
 
-	type inventoryStack struct {
+	material.Possessions = joinCapped(possessionsParts(a.latest), chatContextSectionBytes)
+	material.Abilities = joinCapped(abilitiesParts(a.latest), chatContextSectionBytes)
+	material.Quests = joinCapped(questParts(a.latest), chatContextSectionBytes)
+	material.Surroundings = joinCapped(surroundingsParts(a.latest), chatContextSectionBytes)
+	material.ActivityDetail = joinCapped(activityDetailParts(a.state, a.recent), chatContextSectionBytes)
+	material.Social = joinCapped(socialParts(a.latest, a.state), chatContextSectionBytes)
+	material.Economy = joinCapped(economyParts(a.latest, a.state.Task), chatContextSectionBytes)
+	return material
+}
+
+// characterParts describes the character: race, class, level, health, status.
+func characterParts(snapshot snapshot) []string {
+	parts := []string{}
+	line := ""
+	if race, has := raceNames[snapshot.Bot.RaceID]; has {
+		line = race + " "
+	}
+	if class, has := classNames[snapshot.Bot.ClassID]; has {
+		line += class + " "
+	}
+	line += fmt.Sprintf("level %d, %d%% health", snapshot.Bot.Level, snapshot.Bot.HealthPct)
+	if snapshot.Bot.Alive != nil && !*snapshot.Bot.Alive {
+		line += ", dead"
+	} else if snapshot.Bot.InCombat {
+		line += ", in combat"
+	} else if snapshot.Bot.InFlight {
+		line += ", flying"
+	}
+	parts = append(parts, strings.TrimSpace(line))
+	if snapshot.Guild != nil && snapshot.Guild.Name != "" {
+		guild := "guild " + snapshot.Guild.Name
+		if snapshot.Guild.Rank != "" {
+			guild += " (" + snapshot.Guild.Rank + ")"
+		}
+		parts = append(parts, guild)
+	}
+	return parts
+}
+
+// possessionsParts lists carried stacks and worn gear.
+func possessionsParts(snapshot snapshot) []string {
+	type stack struct {
 		count uint32
 		name  string
 	}
-	var stacks []inventoryStack
-	for _, item := range a.latest.Inventory.Items {
+	var stacks []stack
+	for _, item := range snapshot.Inventory.Items {
 		if item.Name == "" || item.Count == 0 {
 			continue
 		}
-		stacks = append(stacks, inventoryStack{count: item.Count, name: item.Name})
+		stacks = append(stacks, stack{count: item.Count, name: item.Name})
 	}
 	sort.Slice(stacks, func(i, j int) bool {
 		if stacks[i].count != stacks[j].count {
@@ -137,54 +218,162 @@ func (a *actor) buildChatContext() *chatContextMaterial {
 	if len(stacks) > chatContextItemLimit {
 		stacks = stacks[:chatContextItemLimit]
 	}
+	parts := []string{}
 	if len(stacks) > 0 {
-		parts := make([]string, 0, len(stacks))
-		for _, stack := range stacks {
-			parts = append(parts, fmt.Sprintf("%s x%d", stack.name, stack.count))
+		carried := make([]string, 0, len(stacks))
+		for _, entry := range stacks {
+			carried = append(carried, fmt.Sprintf("%s x%d", entry.name, entry.count))
 		}
-		material.Inventory = trimUTF8(strings.Join(parts, "; "), chatContextSectionBytes)
+		parts = append(parts, "carrying "+strings.Join(carried, ", "))
 	}
+	if snapshot.BagSlotsFree > 0 {
+		parts = append(parts, fmt.Sprintf("%d free bag slots", snapshot.BagSlotsFree))
+	}
+	worn := make([]string, 0, len(snapshot.Equipped))
+	for _, item := range snapshot.Equipped {
+		if item.Name == "" {
+			continue
+		}
+		worn = append(worn, item.Name)
+	}
+	sort.Strings(worn)
+	if len(worn) > 0 {
+		parts = append(parts, "wearing "+strings.Join(worn, ", "))
+	}
+	return parts
+}
 
-	if len(a.latest.Quests) > chatContextQuestLimit {
-		// Deterministic subset: keep the first quests in log order.
-		a.latest.Quests = a.latest.Quests[:chatContextQuestLimit]
+// abilitiesParts describes professions, derivable class role and known
+// recipes (product names only; reagent needs live in the economy group).
+func abilitiesParts(snapshot snapshot) []string {
+	parts := []string{}
+	professions := make([]string, 0, len(snapshot.Professions))
+	for name := range snapshot.Professions {
+		professions = append(professions, name)
 	}
-	if len(a.latest.Quests) > 0 {
-		parts := make([]string, 0, len(a.latest.Quests))
-		for _, quest := range a.latest.Quests {
-			if quest.Title == "" {
-				continue
+	sort.Strings(professions)
+	if len(professions) > 0 {
+		profLines := make([]string, 0, len(professions))
+		for _, name := range professions {
+			profLines = append(profLines, fmt.Sprintf("%s %d", name, snapshot.Professions[name]))
+		}
+		parts = append(parts, "professions "+strings.Join(profLines, ", "))
+	}
+	if roles, has := classRoles[snapshot.Bot.ClassID]; has && len(roles) > 0 {
+		ordered := append([]string(nil), roles...)
+		sort.Strings(ordered)
+		parts = append(parts, "can play "+strings.Join(ordered, "/"))
+	}
+	recipes := make([]string, 0, len(snapshot.CraftingRecipes))
+	for _, recipe := range snapshot.CraftingRecipes {
+		if recipe.Name == "" {
+			continue
+		}
+		recipes = append(recipes, recipe.Name)
+	}
+	sort.Strings(recipes)
+	if len(recipes) > chatContextRecipeLimit {
+		recipes = recipes[:chatContextRecipeLimit]
+	}
+	if len(recipes) > 0 {
+		parts = append(parts, "recipes "+strings.Join(recipes, ", "))
+	}
+	if len(snapshot.FlightPaths) > 0 {
+		paths := append([]string(nil), snapshot.FlightPaths...)
+		sort.Strings(paths)
+		if len(paths) > chatContextNearbyLimit {
+			paths = paths[:chatContextNearbyLimit]
+		}
+		parts = append(parts, "flight paths "+strings.Join(paths, ", "))
+	}
+	return parts
+}
+
+// questParts summarizes active quests with objective progress.
+func questParts(snapshot snapshot) []string {
+	if len(snapshot.Quests) > chatContextQuestLimit {
+		snapshot.Quests = snapshot.Quests[:chatContextQuestLimit]
+	}
+	parts := []string{}
+	for _, quest := range snapshot.Quests {
+		if quest.Title == "" {
+			continue
+		}
+		objectives := ""
+		if len(quest.Objectives) > 0 {
+			objectiveParts := make([]string, 0, len(quest.Objectives))
+			for _, objective := range quest.Objectives {
+				objectiveParts = append(objectiveParts, fmt.Sprintf("%d/%d", objective.Count, objective.Required))
 			}
-			objectives := ""
-			if len(quest.Objectives) > 0 {
-				objectiveParts := make([]string, 0, len(quest.Objectives))
-				for _, objective := range quest.Objectives {
-					objectiveParts = append(objectiveParts,
-						fmt.Sprintf("%d/%d", objective.Count, objective.Required))
-				}
-				objectives = " (" + strings.Join(objectiveParts, ", ") + ")"
-			}
-			parts = append(parts, quest.Title+objectives)
+			objectives = " (" + strings.Join(objectiveParts, ", ") + ")"
 		}
-		material.Quests = trimUTF8(strings.Join(parts, "; "), chatContextSectionBytes)
+		parts = append(parts, quest.Title+objectives)
 	}
+	return parts
+}
 
-	if len(a.latest.Professions) > 0 {
-		names := make([]string, 0, len(a.latest.Professions))
-		for name := range a.latest.Professions {
-			names = append(names, name)
+// surroundingsParts lists who and what is nearby, nearest first.
+func surroundingsParts(snapshot snapshot) []string {
+	parts := []string{}
+	appendNearby := func(entries []string) {
+		if len(entries) > chatContextNearbyLimit {
+			entries = entries[:chatContextNearbyLimit]
 		}
-		sort.Strings(names)
-		parts := make([]string, 0, len(names))
-		for _, name := range names {
-			parts = append(parts, fmt.Sprintf("%s %d", name, a.latest.Professions[name]))
-		}
-		material.Skills = trimUTF8(strings.Join(parts, ", "), chatContextSectionBytes)
+		parts = append(parts, entries...)
 	}
+	npcs := make([]string, 0, len(snapshot.NearbyNPCs))
+	for _, npc := range snapshot.NearbyNPCs {
+		if npc.Name == "" {
+			continue
+		}
+		npcs = append(npcs, fmt.Sprintf("%s (%.0fm)", npc.Name, npc.Distance))
+	}
+	sort.Slice(npcs, func(i, j int) bool { return npcs[i] < npcs[j] })
+	appendNearby(npcs)
+	mailboxes := make([]string, 0, len(snapshot.NearbyMailboxes))
+	for _, mailbox := range snapshot.NearbyMailboxes {
+		mailboxes = append(mailboxes, fmt.Sprintf("mailbox %s (%.0fm)", mailbox.Name, mailbox.Distance))
+	}
+	sort.Strings(mailboxes)
+	appendNearby(mailboxes)
+	corpses := make([]string, 0, len(snapshot.NearbyCorpses))
+	for _, corpse := range snapshot.NearbyCorpses {
+		if corpse.Name == "" {
+			continue
+		}
+		corpses = append(corpses, fmt.Sprintf("corpse %s (%.0fm)", corpse.Name, corpse.Distance))
+	}
+	sort.Strings(corpses)
+	appendNearby(corpses)
+	objects := make([]string, 0, len(snapshot.NearbyGameObjects))
+	for _, object := range snapshot.NearbyGameObjects {
+		if object.Name == "" {
+			continue
+		}
+		objects = append(objects, fmt.Sprintf("%s (%.0fm)", object.Name, object.Distance))
+	}
+	sort.Strings(objects)
+	appendNearby(objects)
+	return parts
+}
 
-	var pastTasks []string
-	for index := len(a.recent) - 1; index >= 0 && len(pastTasks) < chatContextTaskLimit; index-- {
-		item := a.recent[index]
+// activityDetailParts describes the current task, recent outcomes and
+// movement status.
+func activityDetailParts(state persistedAgent, recent []recentEvent) []string {
+	parts := []string{}
+	if state.Task != nil {
+		detail := "task " + strings.TrimSpace(state.Task.Kind)
+		if state.Task.TargetName != "" {
+			detail += " " + state.Task.TargetName
+		}
+		if state.Task.GoalCount > 0 {
+			detail += fmt.Sprintf(" (%d/%d)", state.Task.Completed, state.Task.GoalCount)
+		}
+		parts = append(parts, detail)
+	}
+	var results []string
+	for index := len(recent) - 1; index >= 0 && len(results) < chatContextTaskLimit; index-- {
+		item := recent[index]
 		if item.Type != "task_result" {
 			continue
 		}
@@ -201,13 +390,87 @@ func (a *actor) buildChatContext() *chatContextMaterial {
 		if payload.Goal > 0 {
 			summary += fmt.Sprintf(" %d/%d", payload.Completed, payload.Goal)
 		}
-		pastTasks = append([]string{summary}, pastTasks...)
+		results = append([]string{summary}, results...)
 	}
-	if len(pastTasks) > 0 {
-		material.PastTasks = trimUTF8(strings.Join(pastTasks, "; "), chatContextSectionBytes)
+	parts = append(parts, results...)
+	if state.Task == nil && len(results) == 0 {
+		return nil
 	}
+	return parts
+}
 
-	return material
+// socialParts lists group members and remembered identity details.
+func socialParts(snapshot snapshot, state persistedAgent) []string {
+	parts := []string{}
+	if len(snapshot.Bot.GroupMembers) > 0 {
+		members := make([]string, 0, len(snapshot.Bot.GroupMembers))
+		for _, member := range snapshot.Bot.GroupMembers {
+			members = append(members, fmt.Sprintf("%s lvl%d", member.Name, member.Level))
+		}
+		sort.Strings(members)
+		parts = append(parts, "group "+strings.Join(members, ", "))
+	}
+	for index, memory := range state.Memories {
+		if index >= chatContextMemoryLimit {
+			break
+		}
+		if trimmed := strings.TrimSpace(memory); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	return parts
+}
+
+// economyParts describes vendor prices, material needs and mail. Material
+// item names resolve from the carried inventory and the active task's
+// goals; unknown item IDs stay numeric rather than being invented.
+func economyParts(snapshot snapshot, currentTask *task) []string {
+	parts := []string{}
+	itemNames := map[uint32]string{}
+	for _, item := range snapshot.Inventory.Items {
+		if item.Name != "" {
+			itemNames[item.ItemID] = item.Name
+		}
+	}
+	vendors := make([]string, 0, chatContextVendorLimit)
+	for _, npc := range snapshot.NearbyNPCs {
+		for _, offer := range npc.VendorOffers {
+			if len(vendors) >= chatContextVendorLimit {
+				break
+			}
+			vendors = append(vendors, fmt.Sprintf("%s sells %s x%d for %d copper",
+				npc.Name, offer.Name, offer.BundleCount, offer.PriceCopper))
+		}
+	}
+	sort.Strings(vendors)
+	parts = append(parts, vendors...)
+	var materialGoals []craftReagent
+	if currentTask != nil {
+		materialGoals = currentTask.CraftMaterialGoals
+	}
+	if len(materialGoals) > 0 {
+		needs := make([]string, 0, chatContextMaterialLimit)
+		for _, goal := range materialGoals {
+			if len(needs) >= chatContextMaterialLimit {
+				break
+			}
+			name, has := itemNames[goal.ItemID]
+			if !has {
+				continue
+			}
+			needs = append(needs, fmt.Sprintf("%s x%d", name, goal.Count))
+		}
+		if len(needs) > 0 {
+			parts = append(parts, "needs "+strings.Join(needs, ", "))
+		}
+	}
+	if snapshot.MailCount > 0 {
+		parts = append(parts, fmt.Sprintf("%d letters waiting", snapshot.MailCount))
+	}
+	if snapshot.Hearthstone != "" {
+		parts = append(parts, "hearthstone bound to "+snapshot.Hearthstone)
+	}
+	return parts
 }
 
 type chatDecisionResult struct {
@@ -502,15 +765,17 @@ func buildChatQuestions(candidates []chatCandidate, groupSize uint32) map[string
 		Instructions: map[string]any{"question": "Which chat channel should the message use?"},
 		Criteria:     channelCriteria,
 	}
-	// Optional writer-context sections. The writer cannot read live game
-	// state, so Jev selects which pre-materialized gameplay facts the
-	// writer needs for this one message; selection only costs tokens when
-	// the message actually needs them.
-	for _, section := range chatContextSections {
-		questions["ctx_"+section] = typesafeQuestion{
+	// Optional writer-context groups. The writer cannot read live game
+	// state, so Jev selects which pre-materialized groups the writer needs
+	// for this one message; selection only costs tokens when the group is
+	// actually requested. Seven groups keep the battery small while
+	// covering identity, possessions, abilities, quests, surroundings,
+	// activity and economy questions.
+	for _, group := range chatContextGroups {
+		questions["ctx_"+group] = typesafeQuestion{
 			Type: "choice",
 			Instructions: map[string]any{
-				"question": "Should the writer see this character's " + chatContextSectionLabel(section) + "?",
+				"question": "Should the writer see this character's " + chatContextGroupLabel(group) + "?",
 				"focus":    "Include context only when the message would mention or answer with it.",
 			},
 			Criteria: map[string]any{
@@ -522,20 +787,26 @@ func buildChatQuestions(candidates []chatCandidate, groupSize uint32) map[string
 	return questions
 }
 
-// chatContextSectionLabel describes one optional context section for the
-// Jev question and the writer guidance.
-func chatContextSectionLabel(section string) string {
-	switch section {
-	case "inventory":
-		return "carried items (names and counts)"
+// chatContextGroupLabel describes one optional context group for the Jev
+// question and the writer guidance.
+func chatContextGroupLabel(group string) string {
+	switch group {
+	case "possessions":
+		return "carried and worn items"
+	case "abilities":
+		return "professions, recipes and usable abilities"
 	case "quests":
-		return "active quests and their objective progress"
-	case "skills":
-		return "professions and their levels"
-	case "past_tasks":
-		return "recently finished tasks and their outcomes"
+		return "active quests and their progress"
+	case "surroundings":
+		return "nearby people, vendors, mailboxes and objects"
+	case "activity_detail":
+		return "current task progress and recent task outcomes"
+	case "social":
+		return "group members and remembered people"
+	case "economy":
+		return "vendor prices, material needs and mail"
 	default:
-		return section
+		return group
 	}
 }
 
@@ -644,37 +915,30 @@ func (c *controller) runChatPipeline(job chatJob) chatDecisionResult {
 		channel = "say"
 	}
 	result.channel = channel
-	// Optional gameplay context: Jev's per-section include answers are
+	// Optional gameplay context: Jev's per-group include answers are
 	// validated against the allowlist and materialized from the snapshot
 	// the actor prepared. Reply intents name the selection as writer
 	// guidance so the answer addresses the actual question; ambient
 	// messages get the facts without steering.
-	sections := make(map[string]string, len(chatContextSections))
-	selected := make([]string, 0, len(chatContextSections))
-	for _, section := range chatContextSections {
-		if answer, has := answers["ctx_"+section]; !has || answer.Type != "choice" || answer.Choice != "include" {
-			continue
+	sections := make(map[string]string, len(chatContextGroups))
+	selected := make([]string, 0, len(chatContextGroups))
+	if job.context != nil {
+		material := map[string]string{
+			"possessions":     job.context.Possessions,
+			"abilities":       job.context.Abilities,
+			"quests":          job.context.Quests,
+			"surroundings":    job.context.Surroundings,
+			"activity_detail": job.context.ActivityDetail,
+			"social":          job.context.Social,
+			"economy":         job.context.Economy,
 		}
-		selected = append(selected, section)
-		if job.context == nil {
-			continue
-		}
-		switch section {
-		case "inventory":
-			if job.context.Inventory != "" {
-				sections["inventory"] = job.context.Inventory
+		for _, group := range chatContextGroups {
+			if answer, has := answers["ctx_"+group]; !has || answer.Type != "choice" || answer.Choice != "include" {
+				continue
 			}
-		case "quests":
-			if job.context.Quests != "" {
-				sections["quests"] = job.context.Quests
-			}
-		case "skills":
-			if job.context.Skills != "" {
-				sections["skills"] = job.context.Skills
-			}
-		case "past_tasks":
-			if job.context.PastTasks != "" {
-				sections["past_tasks"] = job.context.PastTasks
+			selected = append(selected, group)
+			if content := material[group]; content != "" {
+				sections[group] = content
 			}
 		}
 	}
@@ -683,16 +947,18 @@ func (c *controller) runChatPipeline(job chatJob) chatDecisionResult {
 		guidance = "Answer the human's question using these facts about this character: " +
 			strings.Join(selected, ", ")
 	}
-	money, currentTask := "", ""
+	money, character, currentTask := "", "", ""
 	if job.context != nil {
-		money, currentTask = job.context.Money, job.context.CurrentTask
+		money = job.context.Money
+		character = job.context.Character
+		currentTask = job.context.Activity
 	}
 	composeStart := time.Now()
 	message, composeErr := c.chatCompose.composeChat(c.chatSlots, job.profile, chatComposeRequest{
 		BotName: chatBotName(job), Intent: result.intent, Channel: result.channel,
 		Audience: result.audienceName, GroupSize: job.groupSize,
 		Chats: chatHistoryFromState(job.state),
-		Money: money, CurrentTask: currentTask, Sections: sections, Guidance: guidance,
+		Money: money, Character: character, CurrentTask: currentTask, Sections: sections, Guidance: guidance,
 	})
 	result.sections = selected
 	result.composeElapsed = time.Since(composeStart)

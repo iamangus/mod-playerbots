@@ -221,7 +221,7 @@ func TestChatPipelineContextSectionsAndGuidance(t *testing.T) {
 		"audience":           {Type: "choice", Choice: "person_0", Confidence: 0.9},
 		"channel":            {Type: "choice", Choice: "whisper", Confidence: 0.9},
 		"intent":             {Type: "choice", Choice: "reply", Confidence: 0.9},
-		"ctx_inventory":      {Type: "choice", Choice: "include", Confidence: 0.9},
+		"ctx_possessions":    {Type: "choice", Choice: "include", Confidence: 0.9},
 		"ctx_quests":         {Type: "choice", Choice: "omit", Confidence: 0.9},
 		"ctx_bogus":          {Type: "choice", Choice: "include", Confidence: 0.9},
 	}}
@@ -237,7 +237,7 @@ func TestChatPipelineContextSectionsAndGuidance(t *testing.T) {
 	if request.Money != "12 gold, 34 silver, 56 copper" {
 		t.Fatalf("money not formatted: %q", request.Money)
 	}
-	if got, has := request.Sections["inventory"]; !has || !strings.Contains(got, "Linen Cloth x12") {
+	if got, has := request.Sections["possessions"]; !has || !strings.Contains(got, "Linen Cloth x12") {
 		t.Fatalf("inventory section missing: %v", request.Sections)
 	}
 	if _, has := request.Sections["quests"]; has {
@@ -246,7 +246,7 @@ func TestChatPipelineContextSectionsAndGuidance(t *testing.T) {
 	if len(request.Sections) != 1 {
 		t.Fatalf("unknown ctx answers must be ignored: %v", request.Sections)
 	}
-	if request.Guidance == "" || !strings.Contains(request.Guidance, "inventory") {
+	if request.Guidance == "" || !strings.Contains(request.Guidance, "possessions") {
 		t.Fatalf("reply guidance must name the selected sections: %q", request.Guidance)
 	}
 }
@@ -301,6 +301,8 @@ func TestChatPipelineContextDefaultsWhenUnanswered(t *testing.T) {
 
 func TestBuildChatContextMaterial(t *testing.T) {
 	a, _ := chatTestSetup(t)
+	a.latest.Bot.Level = 5
+	a.latest.Bot.ClassID = 5 // priest: healer/dps roles must appear
 	a.latest.Inventory.MoneyCopper = 0
 	a.latest.Inventory.Items = []struct {
 		ItemID uint32 `json:"item_id"`
@@ -327,22 +329,116 @@ func TestBuildChatContextMaterial(t *testing.T) {
 	if material.Money != "no money" {
 		t.Fatalf("zero money must say so: %q", material.Money)
 	}
-	// No current task and travel target present: activity line comes from travel.
-	if material.CurrentTask != "traveling to Goldshire" {
-		t.Fatalf("travel activity missing: %q", material.CurrentTask)
+	if !strings.Contains(material.Character, "level 5") {
+		t.Fatalf("character line must include level: %q", material.Character)
 	}
-	if got := material.Inventory; !strings.HasPrefix(got, "Copper Ore x30") || !strings.Contains(got, "Malachite x5") ||
-		strings.Contains(got, "Ghost") {
-		t.Fatalf("inventory must be count-sorted and skip empties: %q", got)
+	// No current task and travel target present: activity line comes from travel.
+	if material.Activity != "traveling to Goldshire" {
+		t.Fatalf("travel activity missing: %q", material.Activity)
+	}
+	if got := material.Possessions; !strings.HasPrefix(got, "carrying Copper Ore x30") ||
+		!strings.Contains(got, "Malachite x5") || strings.Contains(got, "Ghost") {
+		t.Fatalf("possessions must be count-sorted and skip empties: %q", got)
 	}
 	if got := material.Quests; got != "Kobold Cleanup (3/10, 1/1)" {
 		t.Fatalf("quest summary wrong: %q", got)
 	}
-	if got := material.Skills; got != "Alchemy 87, Herbalism 150" {
-		t.Fatalf("skills summary wrong: %q", got)
+	if got := material.Abilities; !strings.Contains(got, "professions Alchemy 87, Herbalism 150") ||
+		!strings.Contains(got, "can play") {
+		t.Fatalf("abilities summary wrong: %q", got)
 	}
-	if got := material.PastTasks; got != "kill: done 5/5" {
-		t.Fatalf("past tasks summary wrong: %q", got)
+	if got := material.ActivityDetail; got != "kill: done 5/5" {
+		t.Fatalf("activity detail wrong: %q", got)
+	}
+}
+
+func TestBuildChatContextExtendedGroups(t *testing.T) {
+	a, _ := chatTestSetup(t)
+	a.latest.Bot.Level = 10
+	a.latest.Equipped = []struct {
+		Slot   uint32 `json:"slot"`
+		ItemID uint32 `json:"item_id"`
+		Name   string `json:"name"`
+	}{{Slot: 16, ItemID: 1, Name: "Worn Mace"}, {Slot: 4, ItemID: 2, Name: "Linen Vest"}}
+	a.latest.BagSlotsFree = 3
+	a.latest.Guild = &struct {
+		Name string `json:"name"`
+		Rank string `json:"rank"`
+	}{Name: "Northshire Watch", Rank: "Initiate"}
+	a.latest.Hearthstone = "Northshire Valley"
+	a.latest.FlightPaths = []string{"Stormwind, Elwynn", "Ironforge, Dun Morogh"}
+	a.latest.MailCount = 2
+	a.latest.Reputations = []struct {
+		Faction  string `json:"faction"`
+		Standing int32  `json:"standing"`
+	}{{Faction: "Stormwind", Standing: 1500}}
+	a.latest.CraftingRecipes = []craftRecipeInfo{{SpellID: 1, ItemID: 10, Name: "Copper Chain"}}
+	a.state.Task = &task{Kind: "craft_item", TargetName: "Copper Chain",
+		Completed: 1, GoalCount: 3, CraftMaterialGoals: []craftReagent{{ItemID: 2840, Count: 2}}}
+	a.latest.Inventory.Items = []struct {
+		ItemID uint32 `json:"item_id"`
+		Count  uint32 `json:"count"`
+		Name   string `json:"name"`
+	}{{ItemID: 2840, Count: 1, Name: "Copper Bar"}}
+	a.latest.NearbyNPCs = append(a.latest.NearbyNPCs, struct {
+		GUID         string            `json:"guid"`
+		Name         string            `json:"name"`
+		Entry        uint32            `json:"entry"`
+		NPCFlags     uint32            `json:"npc_flags"`
+		QuestGiver   bool              `json:"quest_giver"`
+		Distance     float64           `json:"distance"`
+		ClassTrainer bool              `json:"class_trainer"`
+		VendorOffers []vendorOfferInfo `json:"vendor_offers,omitempty"`
+		TaxiNodeID   uint32            `json:"taxi_node_id,omitempty"`
+		TaxiRoutes   []taxiRouteInfo   `json:"taxi_routes,omitempty"`
+	}{Name: "Marshal Dughan", Distance: 12, VendorOffers: []vendorOfferInfo{
+		{ItemID: 6272, Name: "Fresh Bread", BundleCount: 5, PriceCopper: 125},
+	}})
+	a.state.Memories = []string{"Peepee asked about copper ore"}
+	a.rememberEvent(event{Type: "task_result", Timestamp: time.Now().UnixMilli(),
+		Payload: mustJSON(map[string]any{"kind": "gather", "status": "done", "completed": 4, "goal": 4})})
+
+	material := a.buildChatContext()
+	if !strings.Contains(material.Character, "level 10") || !strings.Contains(material.Character, "guild Northshire Watch (Initiate)") {
+		t.Fatalf("character line incomplete: %q", material.Character)
+	}
+	if !strings.Contains(material.Possessions, "wearing Linen Vest, Worn Mace") ||
+		!strings.Contains(material.Possessions, "3 free bag slots") {
+		t.Fatalf("possessions must include worn gear and bag space: %q", material.Possessions)
+	}
+	if !strings.Contains(material.Abilities, "recipes Copper Chain") ||
+		!strings.Contains(material.Abilities, "flight paths Ironforge, Dun Morogh, Stormwind, Elwynn") {
+		t.Fatalf("abilities must include recipes and flight paths: %q", material.Abilities)
+	}
+	if !strings.Contains(material.ActivityDetail, "task craft_item Copper Chain (1/3)") ||
+		!strings.Contains(material.ActivityDetail, "gather: done 4/4") {
+		t.Fatalf("activity detail must cover task and results: %q", material.ActivityDetail)
+	}
+	if !strings.Contains(material.Social, "Peepee asked about copper ore") {
+		t.Fatalf("memories must surface in social: %q", material.Social)
+	}
+	if !strings.Contains(material.Economy, "Marshal Dughan sells Fresh Bread x5 for 125 copper") ||
+		!strings.Contains(material.Economy, "needs Copper Bar x2") ||
+		!strings.Contains(material.Economy, "2 letters waiting") ||
+		!strings.Contains(material.Economy, "hearthstone bound to Northshire Valley") {
+		t.Fatalf("economy incomplete: %q", material.Economy)
+	}
+	if strings.Contains(material.Economy, "reputation") {
+		t.Fatal("reputations are native-only data and must not leak unformatted")
+	}
+}
+
+func TestBuildChatContextEmptyGroupsCostNothing(t *testing.T) {
+	a, _ := chatTestSetup(t)
+	material := a.buildChatContext()
+	for _, empty := range []string{material.Possessions, material.Abilities, material.Quests,
+		material.Surroundings, material.ActivityDetail, material.Social, material.Economy} {
+		if empty != "" {
+			t.Fatalf("empty snapshot must leave optional groups empty: %q", empty)
+		}
+	}
+	if material.Money == "" || material.Character == "" {
+		t.Fatal("always-on lines must persist")
 	}
 }
 
@@ -358,8 +454,8 @@ func TestBuildChatContextPrefersCurrentTask(t *testing.T) {
 		MapID           uint32    `json:"map_id"`
 	}{DestinationName: "Goldshire", IsTraveling: true}
 	material := a.buildChatContext()
-	if material.CurrentTask != "craft_item Copper Chain" {
-		t.Fatalf("current task must win over travel: %q", material.CurrentTask)
+	if material.Activity != "craft_item Copper Chain" {
+		t.Fatalf("current task must win over travel: %q", material.Activity)
 	}
 }
 
