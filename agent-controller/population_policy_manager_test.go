@@ -14,7 +14,7 @@ func TestParsePolicyCensus(t *testing.T) {
 		"bots": [{"guid": 7, "name": "Bot", "race": 1, "class": 1, "level": 3, "faction": 1,
 			"online": true, "busy": false, "map_id": 0, "instance_id": 0, "zone_id": 12,
 			"x": 1.5, "y": 2.5, "z": 3.5, "observed_ms": 1234}],
-		"humans": [{"guid": 42, "name": "Angoo", "faction": 1, "map_id": 0,
+		"humans": [{"guid": 42, "name": "Angoo", "faction": 1, "online": true, "map_id": 0,
 			"instance_id": 0, "x": 0.0, "y": 0.0, "zone_id": 12, "observed_ms": 1234}]
 	}`)
 	census := parsePolicyCensus(payload)
@@ -26,6 +26,11 @@ func TestParsePolicyCensus(t *testing.T) {
 	}
 	if census.Bots[0].GUID != 7 || !census.Bots[0].Online || census.Humans[0].GUID != 42 {
 		t.Fatalf("census fields parsed incorrectly: %+v", census)
+	}
+	// Live-session humans are always online; the native census must state
+	// it explicitly because the planner skips offline humans.
+	if !census.Humans[0].Online {
+		t.Fatal("census humans must carry online:true or the planner ignores all demand")
 	}
 
 	// Snapshot payloads are not census payloads.

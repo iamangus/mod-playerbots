@@ -580,7 +580,7 @@ struct AgentPopulation::Impl
                 humans << ",";
             humans << "{\"guid\":" << player->GetGUID().GetRawValue() << ",\"name\":\""
                    << agent_bridge::EscapeJson(player->GetName())
-                   << "\",\"faction\":" << (IsAlliance(player->getRace()) ? 1 : 2)
+                   << "\",\"faction\":" << (IsAlliance(player->getRace()) ? 1 : 2) << ",\"online\":true"
                    << ",\"map_id\":" << player->GetMapId() << ",\"instance_id\":" << player->GetInstanceId()
                    << ",\"x\":" << player->GetPositionX() << ",\"y\":" << player->GetPositionY()
                    << ",\"zone_id\":" << player->GetZoneId() << ",\"observed_ms\":" << observedMs << "}";
