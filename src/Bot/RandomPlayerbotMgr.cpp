@@ -2846,6 +2846,52 @@ void RandomPlayerbotMgr::OnPlayerLoginError(uint32 bot)
     currentBots.erase(bot);
 }
 
+// External population-policy admission of one specific managed bot. The
+// caller (AgentPopulation, world thread) validates the request; membership
+// and state checks here keep pool bookkeeping consistent with the ordinary
+// login loop. Deliberate policy admission clears a prior logout mark so a
+// paused bot can resume before the ordinary logout event expires.
+bool RandomPlayerbotMgr::AdmitManagedBot(uint32 bot)
+{
+    ObjectGuid guid = ObjectGuid::Create<HighGuid::Player>(bot);
+    if (!sPlayerbotAIConfig.IsInRandomAccountList(sCharacterCache->GetCharacterAccountIdByGuid(guid)))
+        return false;
+
+    if (GetPlayerBot(guid) || currentBots.contains(bot))
+        return false;
+
+    uint32 add_time = sPlayerbotAIConfig.enablePeriodicOnlineOffline ? urand(sPlayerbotAIConfig.minRandomBotInWorldTime,
+                                                                             sPlayerbotAIConfig.maxRandomBotInWorldTime)
+                                                                     : sPlayerbotAIConfig.permanentlyInWorldTime;
+
+    SetEventValue(bot, "add", 1, add_time);
+    SetEventValue(bot, "logout", 0, 0);
+    currentBots.insert(bot);
+    AddPlayerBot(guid, 0);
+    return true;
+}
+
+// External population-policy pause of one specific managed bot. Engaged
+// bots are refused so a quota never interrupts combat, trades, flights,
+// death recovery or group obligations.
+bool RandomPlayerbotMgr::LogoutManagedBot(uint32 bot)
+{
+    ObjectGuid guid = ObjectGuid::Create<HighGuid::Player>(bot);
+    Player* player = GetPlayerBot(guid);
+    if (!player)
+        return false;
+
+    if (player->IsInCombat() || player->GetTradeData() || player->IsBeingTeleported() || player->GetGroup() ||
+        player->HasUnitState(UNIT_STATE_IN_FLIGHT) || player->isDead())
+        return false;
+
+    SetEventValue(bot, "logout", 1,
+                  urand(sPlayerbotAIConfig.minRandomBotInWorldTime, sPlayerbotAIConfig.maxRandomBotInWorldTime));
+    currentBots.erase(bot);
+    LogoutPlayerBot(guid);
+    return true;
+}
+
 Player* RandomPlayerbotMgr::GetRandomPlayer()
 {
     if (players.empty())

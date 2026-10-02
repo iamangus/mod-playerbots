@@ -191,14 +191,20 @@ type populationManager struct {
 	owner *controller
 	cfg   populationConfig
 
-	pendingMu  sync.Mutex
-	pending    map[string]chan populationEventResult
-	createSlot chan struct{}
-	stop       chan struct{}
-	stopOnce   sync.Once
-	ownerMu    sync.Mutex
-	ownerToken string
-	ownerSeen  time.Time
+	// policy holds the optional policy-mode rule set; nil keeps legacy
+	// refill behaviour. Both modes never run concurrently.
+	policy *policyRuntime
+
+	pendingMu       sync.Mutex
+	pending         map[string]chan populationEventResult
+	pendingCensusMu sync.Mutex
+	pendingCensus   map[string]chan policyCensus
+	createSlot      chan struct{}
+	stop            chan struct{}
+	stopOnce        sync.Once
+	ownerMu         sync.Mutex
+	ownerToken      string
+	ownerSeen       time.Time
 }
 
 func newPopulationManager(owner *controller, cfg populationConfig) *populationManager {
@@ -206,10 +212,11 @@ func newPopulationManager(owner *controller, cfg populationConfig) *populationMa
 		cfg.maxConcurrent = 1
 	}
 	return &populationManager{
-		owner: owner, cfg: cfg,
-		pending:    make(map[string]chan populationEventResult),
-		createSlot: make(chan struct{}, cfg.maxConcurrent),
-		stop:       make(chan struct{}),
+		owner: owner, cfg: cfg, policy: loadPolicyRuntime(),
+		pending:       make(map[string]chan populationEventResult),
+		pendingCensus: make(map[string]chan policyCensus),
+		createSlot:    make(chan struct{}, cfg.maxConcurrent),
+		stop:          make(chan struct{}),
 	}
 }
 
@@ -271,7 +278,11 @@ func (m *populationManager) run() {
 			m.requestSnapshot()
 		case <-refillTicker.C:
 			if m.leaderLeaseHeld() || m.acquireLeaderLease() {
-				m.reconcile()
+				if m.policy != nil {
+					m.policyReconcile()
+				} else {
+					m.reconcile()
+				}
 			}
 		case <-leaderTicker.C:
 			if m.leaderLeaseHeld() {
@@ -395,6 +406,18 @@ func (m *populationManager) handlePlayerFirstEntry(incoming event) {
 }
 
 func (m *populationManager) handlePopulationResult(incoming event) {
+	if census := parsePolicyCensus(incoming.Payload); census != nil {
+		m.pendingCensusMu.Lock()
+		wait := m.pendingCensus[incoming.RequestID]
+		m.pendingCensusMu.Unlock()
+		if wait != nil {
+			select {
+			case wait <- *census:
+			default:
+			}
+		}
+		return
+	}
 	if snapshot := parsePopulationSnapshot(incoming.Payload); snapshot != nil {
 		snapshot.SnapshotAt = incoming.Timestamp
 		m.storeCounts(*snapshot)
@@ -847,7 +870,8 @@ func (m *populationManager) reserve(zone uint32, reason string) (string, populat
 		cancel()
 	}
 	counts := m.effectiveCounts()
-	if counts == nil || (reason != "player_cohort" && m.cfg.targetTotal != 0 && counts.Total >= uint64(m.cfg.targetTotal)) {
+	if counts == nil || (reason != "player_cohort" && !strings.HasPrefix(reason, "policy:") &&
+		m.cfg.targetTotal != 0 && counts.Total >= uint64(m.cfg.targetTotal)) {
 		unlock()
 		return "", populationReservation{}, false
 	}
@@ -960,6 +984,9 @@ func (m *populationManager) finishCreation(requestID string, reservation populat
 		log.Printf("persist bot record %d: %v", result.GUID, err)
 	}
 	m.owner.redis.Incr(ctx, m.prefixKey("role:"+reservation.Role))
+
+	// Policy-mode creations record the native receipt on their commitment.
+	m.finishPolicyCreate(reason, result.GUID)
 
 	log.Printf("population: created bot %d (%s) race %d class %d role %s zone %d reason %s",
 		result.GUID, result.Name, reservation.Race, reservation.Class, reservation.Role,

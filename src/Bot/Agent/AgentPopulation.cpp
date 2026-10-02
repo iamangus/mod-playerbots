@@ -42,6 +42,7 @@ using boost::placeholders::_1;
 #include "SharedDefines.h"
 #include "Timer.h"
 #include "WorldSession.h"
+#include "WorldSessionMgr.h"
 #include "boost/property_tree/json_parser.hpp"
 #include "boost/property_tree/ptree.hpp"
 
@@ -55,6 +56,10 @@ constexpr uint32 POPULATION_HEARTBEAT_MS = 30000;
 constexpr uint32 SOCIAL_REFRESH_MS = 60000;
 constexpr uint32 SOCIAL_PRESENCE_TTL_MS = 180000;
 constexpr size_t SOCIAL_MAX_BOTS = 256;
+constexpr uint32 POPULATION_POLICY_CENSUS_MIN_INTERVAL_MS = 15000;
+constexpr size_t POPULATION_POLICY_CENSUS_MAX_BOTS = 2000;
+constexpr size_t POPULATION_POLICY_CENSUS_MAX_HUMANS = 500;
+constexpr size_t POPULATION_POLICY_MAX_GUIDS = 32;
 
 struct PopulationCommand
 {
@@ -123,6 +128,7 @@ struct AgentPopulation::Impl
     std::deque<std::string> resultCacheOrder;
     uint32 lastSnapshotMs = 0;
     uint32 lastHeartbeatMs = 0;
+    uint32 lastPolicyCensusMs = 0;
     uint32 lastSocialManifestMs = 0;
     uint32 lastSocialPresenceMs = 0;
     std::string socialManifestRequest;
@@ -461,6 +467,182 @@ struct AgentPopulation::Impl
         CacheAndPublish(requestId, payloadStr);
     }
 
+    // Publishes the live census the external population planner consumes:
+    // managed-pool characters (online with live positions and engagement
+    // flags, offline with their saved position) and online real players.
+    // Bots never appear in the humans list, so bot presence cannot generate
+    // player-vicinity demand. Entries are bounded and partial coverage is
+    // disclosed instead of silently truncating.
+    void HandlePolicyCensus(std::string const& requestId)
+    {
+        uint32 const now = getMSTime();
+        if (lastPolicyCensusMs && getMSTimeDiff(lastPolicyCensusMs, now) < POPULATION_POLICY_CENSUS_MIN_INTERVAL_MS)
+        {
+            CacheAndPublish(requestId, "{\"status\":\"rejected\",\"reason\":\"census throttled\"}");
+            return;
+        }
+        lastPolicyCensusMs = now;
+
+        int64 const observedMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count();
+
+        std::ostringstream bots;
+        size_t botCount = 0;
+        std::unordered_set<uint32> onlineGuids;
+
+        for (auto const& [botGuid, player] : sRandomPlayerbotMgr.GetAllBots())
+        {
+            if (!player || !player->IsInWorld() || botCount >= POPULATION_POLICY_CENSUS_MAX_BOTS)
+                continue;
+            uint32 const guid = botGuid.GetCounter();
+            onlineGuids.insert(guid);
+            if (botCount++)
+                bots << ",";
+            bots << "{\"guid\":" << guid << ",\"name\":\"" << agent_bridge::EscapeJson(player->GetName())
+                 << "\",\"race\":" << static_cast<uint32>(player->getRace())
+                 << ",\"class\":" << static_cast<uint32>(player->getClass())
+                 << ",\"level\":" << static_cast<uint32>(player->GetLevel())
+                 << ",\"faction\":" << (IsAlliance(player->getRace()) ? 1 : 2) << ",\"online\":true,\"busy\":"
+                 << ((player->IsInCombat() || player->GetTradeData() || player->GetGroup() ||
+                      player->HasUnitState(UNIT_STATE_IN_FLIGHT))
+                         ? "true"
+                         : "false")
+                 << ",\"map_id\":" << player->GetMapId() << ",\"instance_id\":" << player->GetInstanceId()
+                 << ",\"zone_id\":" << player->GetZoneId() << ",\"x\":" << player->GetPositionX()
+                 << ",\"y\":" << player->GetPositionY() << ",\"z\":" << player->GetPositionZ()
+                 << ",\"observed_ms\":" << observedMs << "}";
+        }
+
+        // Offline pool characters keep their saved logout position so the
+        // planner can reuse bots already located at a demand region.
+        bool partialBots = false;
+        std::vector<uint32> const accounts = LoadBotAccountIds();
+        if (!accounts.empty())
+        {
+            std::ostringstream accountList;
+            for (size_t i = 0; i < accounts.size(); ++i)
+            {
+                if (i)
+                    accountList << ",";
+                accountList << accounts[i];
+            }
+            QueryResult offline = CharacterDatabase.Query(
+                "SELECT guid, name, race, class, level, map, position_x, position_y, position_z FROM characters "
+                "WHERE account IN ({}) AND online = 0",
+                accountList.str());
+            if (offline)
+            {
+                do
+                {
+                    if (botCount >= POPULATION_POLICY_CENSUS_MAX_BOTS)
+                    {
+                        partialBots = true;
+                        break;
+                    }
+                    Field* fields = offline->Fetch();
+                    uint32 const guid = fields[0].Get<uint32>();
+                    if (onlineGuids.contains(guid))
+                        continue;
+                    uint32 const race = fields[2].Get<uint8>();
+                    if (botCount++)
+                        bots << ",";
+                    bots << "{\"guid\":" << guid << ",\"name\":\""
+                         << agent_bridge::EscapeJson(fields[1].Get<std::string>())
+                         << "\",\"race\":" << static_cast<uint32>(race)
+                         << ",\"class\":" << static_cast<uint32>(fields[3].Get<uint8>())
+                         << ",\"level\":" << static_cast<uint32>(fields[4].Get<uint8>())
+                         << ",\"faction\":" << (IsAlliance(static_cast<uint8>(race)) ? 1 : 2)
+                         << ",\"online\":false,\"busy\":false"
+                         << ",\"map_id\":" << fields[5].Get<uint32>() << ",\"instance_id\":0"
+                         << ",\"zone_id\":0"
+                         << ",\"x\":" << fields[6].Get<float>() << ",\"y\":" << fields[7].Get<float>()
+                         << ",\"z\":" << fields[8].Get<float>() << ",\"observed_ms\":" << observedMs << "}";
+                } while (offline->NextRow());
+            }
+        }
+
+        std::ostringstream humans;
+        size_t humanCount = 0;
+        bool partialHumans = false;
+        for (auto const& [accountId, session] : sWorldSessionMgr->GetAllSessions())
+        {
+            Player* player = session ? session->GetPlayer() : nullptr;
+            if (!player || !player->IsInWorld() || player->IsGameMaster() || GET_PLAYERBOT_AI(player) != nullptr ||
+                sRandomPlayerbotMgr.IsRandomBot(player))
+                continue;
+            if (humanCount >= POPULATION_POLICY_CENSUS_MAX_HUMANS)
+            {
+                partialHumans = true;
+                break;
+            }
+            if (humanCount++)
+                humans << ",";
+            humans << "{\"guid\":" << player->GetGUID().GetRawValue() << ",\"name\":\""
+                   << agent_bridge::EscapeJson(player->GetName())
+                   << "\",\"faction\":" << (IsAlliance(player->getRace()) ? 1 : 2)
+                   << ",\"map_id\":" << player->GetMapId() << ",\"instance_id\":" << player->GetInstanceId()
+                   << ",\"x\":" << player->GetPositionX() << ",\"y\":" << player->GetPositionY()
+                   << ",\"zone_id\":" << player->GetZoneId() << ",\"observed_ms\":" << observedMs << "}";
+        }
+
+        std::ostringstream payload;
+        payload << "{\"status\":\"completed\",\"observed_ms\":" << observedMs << ",\"realm_id\":" << realm.Id.Realm
+                << ",\"partial\":" << ((partialBots || partialHumans) ? "true" : "false") << ",\"bots\":[" << bots.str()
+                << "],\"humans\":[" << humans.str() << "]}";
+        CacheAndPublish(requestId, payload.str());
+    }
+
+    // Deliberate per-bot admission requested by the population planner.
+    // Bounded per command; native checks refuse duplicates and unmanaged
+    // characters, and results are authoritative, not assumed.
+    void HandlePolicyAdmitBots(boost::property_tree::ptree const& arguments, std::string const& requestId)
+    {
+        auto guids = arguments.get_child_optional("guids");
+        if (!guids || guids->empty() || guids->size() > POPULATION_POLICY_MAX_GUIDS)
+        {
+            CacheAndPublish(requestId, "{\"status\":\"rejected\",\"reason\":\"guids out of range\"}");
+            return;
+        }
+        uint32 admitted = 0;
+        uint32 rejected = 0;
+        for (auto const& entry : *guids)
+        {
+            if (sRandomPlayerbotMgr.AdmitManagedBot(entry.second.get_value<uint32>()))
+                ++admitted;
+            else
+                ++rejected;
+        }
+        std::ostringstream payload;
+        payload << "{\"status\":\"completed\",\"admitted\":" << admitted << ",\"rejected\":" << rejected << "}";
+        CacheAndPublish(requestId, payload.str());
+    }
+
+    // Deliberate per-bot pause requested by the population planner. Engaged
+    // bots are refused natively; the controller applies its own logout
+    // grace before dispatching.
+    void HandlePolicyLogoutBots(boost::property_tree::ptree const& arguments, std::string const& requestId)
+    {
+        auto guids = arguments.get_child_optional("guids");
+        if (!guids || guids->empty() || guids->size() > POPULATION_POLICY_MAX_GUIDS)
+        {
+            CacheAndPublish(requestId, "{\"status\":\"rejected\",\"reason\":\"guids out of range\"}");
+            return;
+        }
+        uint32 loggedOut = 0;
+        uint32 rejected = 0;
+        for (auto const& entry : *guids)
+        {
+            if (sRandomPlayerbotMgr.LogoutManagedBot(entry.second.get_value<uint32>()))
+                ++loggedOut;
+            else
+                ++rejected;
+        }
+        std::ostringstream payload;
+        payload << "{\"status\":\"completed\",\"logged_out\":" << loggedOut << ",\"rejected\":" << rejected << "}";
+        CacheAndPublish(requestId, payload.str());
+    }
+
     void ExecuteCommand(PopulationCommand const& command)
     {
         if (!command.requestId.empty())
@@ -483,6 +665,12 @@ struct AgentPopulation::Impl
                 HandleCreateBot(arguments, command.requestId);
             else if (command.operation == "population_snapshot")
                 HandlePopulationSnapshot(command.requestId);
+            else if (command.operation == "population_policy_census")
+                HandlePolicyCensus(command.requestId);
+            else if (command.operation == "population_policy_admit_bots")
+                HandlePolicyAdmitBots(arguments, command.requestId);
+            else if (command.operation == "population_policy_logout_bots")
+                HandlePolicyLogoutBots(arguments, command.requestId);
             else if (command.operation == "social_population_manifest")
                 HandleSocialManifest(command.requestId);
             else if (command.operation == "social_schedule_preferences")

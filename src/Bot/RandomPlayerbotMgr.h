@@ -120,6 +120,14 @@ public:
     void OnPlayerLogin(Player* player);
     void OnPlayerLoginError(uint32 bot);
     void RegisterBotAccount(uint32 accountId);
+    // External population-policy admission of one specific managed bot.
+    // Validates managed-account membership and online state; returns false
+    // when the bot cannot be admitted.
+    bool AdmitManagedBot(uint32 bot);
+    // External population-policy pause of one specific managed bot. Refuses
+    // grouped, trading, or otherwise engaged bots; returns false when the
+    // bot was not paused.
+    bool LogoutManagedBot(uint32 bot);
     Player* GetRandomPlayer();
     std::vector<Player*> GetPlayers() { return players; };
     PlayerBotMap GetAllBots() { return playerBots; };
