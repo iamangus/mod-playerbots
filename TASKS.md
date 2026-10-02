@@ -704,6 +704,22 @@ population owns the count; auto-randomize is off), recorded the config at
 mandatory clean reset. Verified: worldserver logged "100/100" and a 40-second
 NATS sample shows 100 distinct live bots.
 
+**Whisper no-reply diagnosis and fix (`e12603a8`, deploying):** Owner whispered
+seven bots and got no response. Clean-window evidence: the task model still
+held `send_chat` and emitted 68 ambient dispatches in five minutes, consuming
+the persisted per-bot budgets — 158 pipeline deferrals (`chat_deferred`) and
+24 budget rejections; the 12 Jev communicates were all broadcast
+recruit/assist lines, none whisper replies. Per the agreed split, chat
+decisions now belong to the pipeline: when it is enabled the task model's
+tool set drops `send_chat` (trade negotiation keeps its whisper message) and
+its prompt says the pipeline handles all talking; the legacy prompt and full
+tool set remain for deployments without a TypeSafe key. Regressions pin the
+filter (nested tool names), both prompt variants; race suite (three runs),
+vet pass. Controller published as `local-jev-owns-chat`
+(`1868218c…`), workload patched, saved pin matches, mandatory reset running.
+After reset: verify startup, then the owner re-whispers for end-to-end reply
+verification (pipeline decision, writer message, native chat_sent).
+
 ### TASK-012 — Remove legacy autonomous AI tree (queued)
 
 **Original request:** "I dont want to keep all that old code around. I basically
