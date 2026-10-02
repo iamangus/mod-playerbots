@@ -655,6 +655,7 @@ func main() {
 		c.chatEval = typesafe
 	}
 	c.chatCompose = c.model
+	c.model.setChatOwnership(c.chatEnabled())
 	c.startChatWorkers(chatWorkers)
 	if c.chatEnabled() {
 		log.Printf("chat decision pipeline enabled model=%s endpoint=%s threshold=%.2f audience_confidence=%.2f",

@@ -295,6 +295,45 @@ func TestChatSchedulingSkipsDeadCombatAndBudget(t *testing.T) {
 	}
 }
 
+func TestTaskToolsFilterRemovesOnlySendChat(t *testing.T) {
+	owned := taskTools(agentTools, true)
+	for _, tool := range owned {
+		if toolName(tool) == "send_chat" {
+			t.Fatal("send_chat survived chat ownership")
+		}
+	}
+	if len(owned) != len(agentTools)-1 {
+		t.Fatalf("owned tool count %d, want %d", len(owned), len(agentTools)-1)
+	}
+	unowned := taskTools(agentTools, false)
+	if len(unowned) != len(agentTools) {
+		t.Fatal("legacy path lost tools")
+	}
+	negotiates := false
+	for _, tool := range owned {
+		if toolName(tool) == "negotiate_crafting_trade" {
+			negotiates = true
+		}
+	}
+	if !negotiates {
+		t.Fatal("trade negotiation lost its message ability")
+	}
+}
+
+func TestSystemPromptChatOwnershipVariants(t *testing.T) {
+	owned := systemPrompt("profile", true)
+	if !strings.Contains(owned, "no send_chat tool") {
+		t.Fatal("owned prompt does not declare the chat handover")
+	}
+	if strings.Contains(owned, "must get a visible send_chat reply") {
+		t.Fatal("owned prompt still demands chat replies")
+	}
+	legacy := systemPrompt("profile", false)
+	if !strings.Contains(legacy, "must get a visible send_chat reply") {
+		t.Fatal("legacy prompt lost the reply directive")
+	}
+}
+
 func TestChatPipelineDisabledWithoutTypesafeKey(t *testing.T) {
 	a, _ := chatTestSetup(t)
 	chatEvent := event{EventID: "evt10", Type: "chat_received", Timestamp: time.Now().UnixMilli(),

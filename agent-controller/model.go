@@ -20,6 +20,8 @@ type modelClient struct {
 	chatWriterMaxTokens uint32
 	reasoningEffort     string
 	client              *http.Client
+	tools               []map[string]any
+	chatOwned           bool
 }
 
 type modelToolCall struct {
@@ -44,7 +46,15 @@ func newModelClient(cfg config) *modelClient {
 		chatWriterMaxTokens: writerTokens,
 		reasoningEffort:     cfg.reasoningEffort,
 		client:              &http.Client{Timeout: cfg.requestTimeout},
+		tools:               agentTools,
 	}
+}
+
+// setChatOwnership hands chat decisions to the communication pipeline. The
+// task model keeps every non-chat tool and is told that it cannot speak.
+func (client *modelClient) setChatOwnership(owned bool) {
+	client.chatOwned = owned
+	client.tools = taskTools(agentTools, owned)
 }
 
 // reasoningParam caps reasoning-style models. Providers that do not support
@@ -81,10 +91,10 @@ func (client *modelClient) decide(slots chan struct{}, profile string, memories 
 		"model":      client.model,
 		"max_tokens": client.maxTokens,
 		"messages": []map[string]string{
-			{"role": "system", "content": systemPrompt(profile)},
+			{"role": "system", "content": systemPrompt(profile, client.chatOwned)},
 			{"role": "user", "content": string(observation)},
 		},
-		"tools":               agentTools,
+		"tools":               client.tools,
 		"tool_choice":         "auto",
 		"parallel_tool_calls": false,
 	}
@@ -221,8 +231,8 @@ func (client *modelClient) composeChat(slots chan struct{}, profile string, requ
 	return strings.TrimSpace(decoded.Choices[0].Message.Content), nil
 }
 
-func systemPrompt(profile string) string {
-	return "You control one persistent World of Warcraft 3.3.5a playerbot. The live state in the observation is authoritative. " +
+func systemPrompt(profile string, chatOwned bool) string {
+	prompt := "You control one persistent World of Warcraft 3.3.5a playerbot. The live state in the observation is authoritative. " +
 		"All high-level quest, kill-count, gathering, and social loops are executed by this external agent. AzerothCore " +
 		"only executes bounded navigation, combat-target, loot/interact, chat, and group primitives. Combat rotations " +
 		"remain in the existing bot AI. Coordinate with other agents only through visible in-game chat; never assume hidden " +
@@ -236,9 +246,19 @@ func systemPrompt(profile string) string {
 		"When a player asks you to lead, choose a concrete destination or quest/combat task; following the player is not leading. " +
 		"When social_progression is present, use its authoritative friend presence, level band and region preferences. Keep independent goals in the friend's general zone; this is not a follow order. Favor low-XP work while ahead or after confirmed friends-offline grace, normal level-appropriate progression while behind, and never interrupt active group obligations for pacing. Unknown or stale presence is not logout. A friendship comes from an explicit human friend-list relationship, never a casual whisper or proximity. " +
 		"Grouped non-leader bots assist their leader automatically; if you are the group leader, choose the group's actual " +
-		"task (destination, quest, or combat) when the player asks you to lead — never pick assist_leader for yourself. " +
-		"Any message addressed to you from a real player must get a visible send_chat reply in the same channel, even if " +
-		"brief, before or alongside any task action; never stay silent when directly addressed. " +
+		"task (destination, quest, or combat) when the player asks you to lead — never pick assist_leader for yourself. "
+	if chatOwned {
+		// The communication pipeline owns every chat decision; the task model
+		// has no send_chat tool and must not claim to have spoken.
+		prompt += "Chat decisions belong to the separate communication pipeline: you have no send_chat tool and must never " +
+			"claim to have spoken in chat. If a player asks for something actionable, act with the task tools; the pipeline " +
+			"handles all talking, including replies to you. "
+	} else {
+		prompt += "Any message addressed to you from a real player must get a visible send_chat reply in the same channel, even if " +
+			"brief, before or alongside any task action; never stay silent when directly addressed. " +
+			"Reply to any message in the same chat channel it was said in, whether the sender is a player or another bot. "
+	}
+	prompt += "Direct requests from real players outrank your current task: acknowledge and act on them. " +
 		"If you are the group leader and a player asks you to promote someone, use pass_leadership immediately. " +
 		"When asked to fill or grow the group, announce it in /say first (who you are, what you plan, that invites are coming), " +
 		"then invite only nearby characters with in_group=false; if the candidates are " +
@@ -249,15 +269,14 @@ func systemPrompt(profile string) string {
 		"You can invite by name anyone you have seen in chat, even far away; invites are not range limited. " +
 		"The snapshot lists quests you can take nearby in available_quests; to grow your quest log pick one and call " +
 		"accept_quest, then work_on_quest on it. " +
-		"Reply to any message in the same chat channel it was said in, whether the sender is a player or another bot. " +
 		"An event of type chat_auto_replied means the separate communication pipeline already answered that message: " +
 		"do not send another reply to it and do not restate its content. " +
-		"Direct requests from real players outrank your current task: acknowledge and act on them. " +
 		"If a player asks to join your group and it is full (5/5), say so in that channel and " +
 		"point them to a bot outside the group; if you can invite, invite immediately instead of just agreeing in chat. " +
 		"A pending trade is not necessarily an open window: check trade.window_open, and open it before asking the player to offer items. " +
 		"Reply in the incoming message's language; SAY/YELL use the bot's faction language. Use remember only " +
 		"for durable useful facts, and keep identity stable. Profile: " + profile
+	return prompt
 }
 
 // generateProfileSync produces a short playstyle persona for a newly

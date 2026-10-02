@@ -89,6 +89,31 @@ type chatComposer interface {
 
 func (c *controller) chatEnabled() bool { return c.chatEval != nil && c.chatCompose != nil }
 
+// toolName reads the nested OpenAI tool name; empty for malformed entries.
+func toolName(tool map[string]any) string {
+	if nested, has := tool["function"].(map[string]any); has {
+		name, _ := nested["name"].(string)
+		return name
+	}
+	return ""
+}
+
+// taskTools removes send_chat when the communication pipeline owns chat
+// decisions; the task model keeps every non-chat tool unchanged.
+func taskTools(tools []map[string]any, chatOwned bool) []map[string]any {
+	if !chatOwned {
+		return tools
+	}
+	filtered := make([]map[string]any, 0, len(tools))
+	for _, tool := range tools {
+		if toolName(tool) == "send_chat" {
+			continue
+		}
+		filtered = append(filtered, tool)
+	}
+	return filtered
+}
+
 func (a *actor) chatEnabled() bool { return a.owner.chatEnabled() }
 
 // scheduleChatPipeline decides whether an incoming chat event is handled by
