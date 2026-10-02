@@ -432,9 +432,10 @@ struct AgentPopulation::Impl
                     if (!first)
                         counts << ",";
                     first = false;
-                    counts << "{\"race\":" << fields[0].Get<uint8>() << ",\"class\":" << fields[1].Get<uint8>()
-                           << ",\"level_band\":" << fields[2].Get<uint8>() << ",\"count\":" << fields[3].Get<uint64>()
-                           << "}";
+                    counts << "{\"race\":" << static_cast<uint32>(fields[0].Get<uint8>())
+                           << ",\"class\":" << static_cast<uint32>(fields[1].Get<uint8>())
+                           << ",\"level_band\":" << static_cast<uint32>(fields[2].Get<uint8>())
+                           << ",\"count\":" << fields[3].Get<uint64>() << "}";
                     total += fields[3].Get<uint64>();
                 } while (characterCounts->NextRow());
             }
