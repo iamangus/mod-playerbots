@@ -644,6 +644,45 @@ Cross-zone routing, remaining quest-type coverage and autonomous level-80
 progression stay unproven. Continue TASK-011 group/social and cohort
 validation; broader quest-type coverage remains pending.
 
+### TASK-013 — Jev chat decision pipeline (implemented, deployment pending)
+
+**Original request:** "I want to move to using jev for all decisioning" —
+agreed first phase: Jev decides communication (whether/whom/channel/intent);
+the text model only writes the message.
+
+**Implemented (committed/pushed as `49f8f4cd`):** New TypeSafe System One
+client (`agent-controller/typesafe.go`, raw HTTP, 429/529 backoff, fail-closed).
+New pipeline (`agent-controller/chat_decision.go`): on `chat_received`, a
+worker pool runs one evaluation request with `should_communicate` (noul gate,
+default 0.7), `audience` (choice over snapshot-enumerated candidates with
+`person_N` keys and `AGENT_CHAT_AUDIENCE_CONFIDENCE_MIN` confidence floor),
+`channel` (choice restricted to say/yell/general/whisper/party; invalid combos
+fall back to say) and `intent` (reply/greet/assist_offer/recruit/flavor). Dead,
+in-combat, offline and budget-exhausted bots never schedule. The writer is the
+existing OpenRouter model with a tool-free prompt; failures send the canned
+line "Sorry, I can't talk right now." and still consume the budget. Persisted
+per-bot budget (min interval 20s, 5 per 5min, env-tunable) also now bounds the
+task model's own `send_chat` dispatches. After every pipeline result the
+ordinary task decision resumes through the snapshot path, and `chat_auto_replied`
+context tells the task model not to double-reply. Without
+`AGENT_TYPESAFE_API_KEY` the pipeline is disabled and behavior is unchanged.
+Eleven regressions (thresholds, audience keys/confidence, channel fallback,
+canned fallback, budgets across restart, dead/combat scheduling, legacy
+fallback, decision-model budget); race suite (three runs), vet, gofmt pass.
+
+**Typed-nil disable fix (`4aed8b41`, deployed):** First live deployment logged
+"chat decision pipeline enabled" despite no `AGENT_TYPESAFE_API_KEY` in the pod
+environment: a nil `*typesafeClient` assigned to the `chatEvaluator` interface
+is a non-nil interface value, so `chatEnabled()` was true and chats burned
+doomed evaluations instead of falling back to the task model (behaviorally
+fail-closed, but wrong). Production wiring now assigns only a constructed
+client; regressions pin no-key/no-client and disabled-wiring both ways. Race
+suite (three runs) and vet pass. Controller republished as `local-jev-chat-fix`
+(`429370a0…`), workload patched, saved pin matches, mandatory reset running.
+Post-reset startup must log "chat decision pipeline disabled"; the pipeline
+activates only when `AGENT_TYPESAFE_API_KEY` is provisioned. Live Jev chat
+verification remains pending until the key exists.
+
 ### TASK-012 — Remove legacy autonomous AI tree (queued)
 
 **Original request:** "I dont want to keep all that old code around. I basically
