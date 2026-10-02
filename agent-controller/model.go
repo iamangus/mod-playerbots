@@ -167,11 +167,29 @@ func (client *modelClient) composeChat(slots chan struct{}, profile string, requ
 	}
 	system := "You write ONE short in-character chat message for a persistent World of Warcraft 3.3.5a playerbot. " +
 		"Output only the message text on a single line: no quotes, no stage directions, no lists, no name prefixes. " +
-		"Stay family-friendly and in character. Match the language of the recent chat. At most 200 characters. Profile: " + profile
+		"Stay family-friendly and in character. Match the language of the recent chat. At most 200 characters. " +
+		"The money and current_task fields are facts this character knows; the context object holds only sections " +
+		"the character chose to consult. Never contradict or invent beyond these facts; if asked something the facts " +
+		"do not cover, answer honestly instead of making numbers up. Profile: " + profile
 	observation, err := json.Marshal(map[string]any{
 		"bot_name": request.BotName, "intent": request.Intent, "channel": request.Channel,
 		"audience": request.Audience, "group_size": request.GroupSize, "recent_chat": request.Chats,
+		"money": request.Money, "current_task": request.CurrentTask,
 	})
+	if err != nil {
+		return "", fmt.Errorf("encode chat writer request: %w", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(observation, &payload); err != nil {
+		return "", fmt.Errorf("decode chat writer observation: %w", err)
+	}
+	if len(request.Sections) > 0 {
+		payload["context"] = request.Sections
+	}
+	if request.Guidance != "" {
+		payload["guidance"] = request.Guidance
+	}
+	observation, err = json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("encode chat writer request: %w", err)
 	}

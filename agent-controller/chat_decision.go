@@ -45,6 +45,14 @@ type chatComposeRequest struct {
 	Audience  string // person name, empty for broadcast
 	GroupSize uint32
 	Chats     []chatMessageInfo
+	// Money and CurrentTask are always provided as facts the character
+	// knows. Sections carries only the Jev-selected optional material;
+	// Guidance names that selection for reply intents so the writer
+	// answers the actual question instead of paraphrasing it.
+	Money       string
+	CurrentTask string
+	Sections    map[string]string
+	Guidance    string
 }
 
 // chatJob carries everything the worker needs; it never reads live actor
@@ -59,6 +67,147 @@ type chatJob struct {
 	groupSize      uint32
 	profile        string
 	jitter         time.Duration
+	context        *chatContextMaterial
+}
+
+// chatContextSections are the optional writer-context sections Jev may
+// request; parsed answers are validated against this allowlist.
+var chatContextSections = []string{"inventory", "quests", "skills", "past_tasks"}
+
+// chatContextMaterial holds deterministic bounded gameplay-context slices
+// pre-materialized on the actor; chat workers only pick from these, so no
+// model call and no live state read happens during composition.
+type chatContextMaterial struct {
+	Money       string `json:"money,omitempty"`
+	CurrentTask string `json:"current_task,omitempty"`
+	Inventory   string `json:"inventory,omitempty"`
+	Quests      string `json:"quests,omitempty"`
+	Skills      string `json:"skills,omitempty"`
+	PastTasks   string `json:"past_tasks,omitempty"`
+}
+
+const (
+	chatContextItemLimit    = 10
+	chatContextQuestLimit   = 5
+	chatContextTaskLimit    = 5
+	chatContextSectionBytes = 400
+)
+
+// buildChatContext materializes the bounded gameplay slices from the latest
+// snapshot and actor state. Money and the current activity are always-on;
+// the optional sections stay empty until Jev selects them for one message.
+func (a *actor) buildChatContext() *chatContextMaterial {
+	material := &chatContextMaterial{}
+
+	copper := a.latest.Inventory.MoneyCopper
+	if copper > 0 {
+		material.Money = fmt.Sprintf("%d gold, %d silver, %d copper",
+			copper/10000, (copper/100)%100, copper%100)
+	} else {
+		material.Money = "no money"
+	}
+
+	if task := a.state.Task; task != nil {
+		current := strings.TrimSpace(task.Kind)
+		if task.TargetName != "" {
+			current += " " + task.TargetName
+		}
+		material.CurrentTask = current
+	} else if travel := a.latest.TravelTarget; travel != nil && travel.IsTraveling && travel.DestinationName != "" {
+		material.CurrentTask = "traveling to " + travel.DestinationName
+	}
+
+	type inventoryStack struct {
+		count uint32
+		name  string
+	}
+	var stacks []inventoryStack
+	for _, item := range a.latest.Inventory.Items {
+		if item.Name == "" || item.Count == 0 {
+			continue
+		}
+		stacks = append(stacks, inventoryStack{count: item.Count, name: item.Name})
+	}
+	sort.Slice(stacks, func(i, j int) bool {
+		if stacks[i].count != stacks[j].count {
+			return stacks[i].count > stacks[j].count
+		}
+		return stacks[i].name < stacks[j].name
+	})
+	if len(stacks) > chatContextItemLimit {
+		stacks = stacks[:chatContextItemLimit]
+	}
+	if len(stacks) > 0 {
+		parts := make([]string, 0, len(stacks))
+		for _, stack := range stacks {
+			parts = append(parts, fmt.Sprintf("%s x%d", stack.name, stack.count))
+		}
+		material.Inventory = trimUTF8(strings.Join(parts, "; "), chatContextSectionBytes)
+	}
+
+	if len(a.latest.Quests) > chatContextQuestLimit {
+		// Deterministic subset: keep the first quests in log order.
+		a.latest.Quests = a.latest.Quests[:chatContextQuestLimit]
+	}
+	if len(a.latest.Quests) > 0 {
+		parts := make([]string, 0, len(a.latest.Quests))
+		for _, quest := range a.latest.Quests {
+			if quest.Title == "" {
+				continue
+			}
+			objectives := ""
+			if len(quest.Objectives) > 0 {
+				objectiveParts := make([]string, 0, len(quest.Objectives))
+				for _, objective := range quest.Objectives {
+					objectiveParts = append(objectiveParts,
+						fmt.Sprintf("%d/%d", objective.Count, objective.Required))
+				}
+				objectives = " (" + strings.Join(objectiveParts, ", ") + ")"
+			}
+			parts = append(parts, quest.Title+objectives)
+		}
+		material.Quests = trimUTF8(strings.Join(parts, "; "), chatContextSectionBytes)
+	}
+
+	if len(a.latest.Professions) > 0 {
+		names := make([]string, 0, len(a.latest.Professions))
+		for name := range a.latest.Professions {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		parts := make([]string, 0, len(names))
+		for _, name := range names {
+			parts = append(parts, fmt.Sprintf("%s %d", name, a.latest.Professions[name]))
+		}
+		material.Skills = trimUTF8(strings.Join(parts, ", "), chatContextSectionBytes)
+	}
+
+	var pastTasks []string
+	for index := len(a.recent) - 1; index >= 0 && len(pastTasks) < chatContextTaskLimit; index-- {
+		item := a.recent[index]
+		if item.Type != "task_result" {
+			continue
+		}
+		var payload struct {
+			Kind      string `json:"kind"`
+			Status    string `json:"status"`
+			Completed uint32 `json:"completed"`
+			Goal      uint32 `json:"goal"`
+		}
+		if json.Unmarshal(item.Payload, &payload) != nil || payload.Kind == "" {
+			continue
+		}
+		summary := payload.Kind + ": " + payload.Status
+		if payload.Goal > 0 {
+			summary += fmt.Sprintf(" %d/%d", payload.Completed, payload.Goal)
+		}
+		pastTasks = append([]string{summary}, pastTasks...)
+	}
+	if len(pastTasks) > 0 {
+		material.PastTasks = trimUTF8(strings.Join(pastTasks, "; "), chatContextSectionBytes)
+	}
+
+	return material
 }
 
 type chatDecisionResult struct {
@@ -69,14 +218,19 @@ type chatDecisionResult struct {
 	audienceName    string
 	channel         string
 	channelFallback bool
-	intent          string
-	message         string
-	source          string // "writer" | "canned"
-	noul            float64
-	confidence      float64
-	evaluateElapsed time.Duration
-	composeElapsed  time.Duration
-	err             string
+	// audienceFallback marks a reply whose audience pick fell below the
+	// confidence gate; the message downgraded to broadcast instead of
+	// being dropped.
+	audienceFallback bool
+	intent           string
+	sections         []string
+	message          string
+	source           string // "writer" | "canned"
+	noul             float64
+	confidence       float64
+	evaluateElapsed  time.Duration
+	composeElapsed   time.Duration
+	err              string
 }
 
 type chatEvaluator interface {
@@ -167,6 +321,7 @@ func (a *actor) buildChatJob(incoming event) (chatJob, bool) {
 		groupSize:      a.latest.Bot.GroupSize,
 		profile:        profile,
 		jitter:         a.owner.cfg.chatJitter,
+		context:        a.buildChatContext(),
 	}, true
 }
 
@@ -178,6 +333,7 @@ func (a *actor) recentChats(now time.Time) []chatMessageInfo {
 		}
 		var payload struct {
 			Channel    string `json:"channel"`
+			ChatType   string `json:"chat_type"`
 			SenderName string `json:"sender_name"`
 			Message    string `json:"message"`
 		}
@@ -186,6 +342,10 @@ func (a *actor) recentChats(now time.Time) []chatMessageInfo {
 		}
 		if strings.EqualFold(payload.SenderName, a.latest.Bot.Name) {
 			continue // the bot's own messages echo back as chat events
+		}
+		// Native and cluster bridges use chat_type for non-channel messages.
+		if payload.ChatType != "" && payload.ChatType != "channel" {
+			payload.Channel = payload.ChatType
 		}
 		age := 0.0
 		if item.Timestamp > 0 {
@@ -342,7 +502,41 @@ func buildChatQuestions(candidates []chatCandidate, groupSize uint32) map[string
 		Instructions: map[string]any{"question": "Which chat channel should the message use?"},
 		Criteria:     channelCriteria,
 	}
+	// Optional writer-context sections. The writer cannot read live game
+	// state, so Jev selects which pre-materialized gameplay facts the
+	// writer needs for this one message; selection only costs tokens when
+	// the message actually needs them.
+	for _, section := range chatContextSections {
+		questions["ctx_"+section] = typesafeQuestion{
+			Type: "choice",
+			Instructions: map[string]any{
+				"question": "Should the writer see this character's " + chatContextSectionLabel(section) + "?",
+				"focus":    "Include context only when the message would mention or answer with it.",
+			},
+			Criteria: map[string]any{
+				"include": "The message needs these facts to answer or speak accurately",
+				"omit":    "The message does not need this context",
+			},
+		}
+	}
 	return questions
+}
+
+// chatContextSectionLabel describes one optional context section for the
+// Jev question and the writer guidance.
+func chatContextSectionLabel(section string) string {
+	switch section {
+	case "inventory":
+		return "carried items (names and counts)"
+	case "quests":
+		return "active quests and their objective progress"
+	case "skills":
+		return "professions and their levels"
+	case "past_tasks":
+		return "recently finished tasks and their outcomes"
+	default:
+		return section
+	}
 }
 
 func chatChannelAllowed(channel string, personAudience bool, groupSize uint32) bool {
@@ -408,6 +602,9 @@ func (c *controller) runChatPipeline(job chatJob) chatDecisionResult {
 		result.skipReason = "below_threshold"
 		return result
 	}
+	if answer, has := answers["intent"]; has && answer.Type == "choice" && chatIntentAllowed(answer.Choice) {
+		result.intent = answer.Choice
+	}
 	audienceKey := "broadcast"
 	if answer, has := answers["audience"]; has && answer.Type == "choice" && answer.Choice != "" {
 		audienceKey = answer.Choice
@@ -420,11 +617,23 @@ func (c *controller) runChatPipeline(job chatJob) chatDecisionResult {
 			return result
 		}
 		if result.confidence < c.cfg.chatAudienceConfidence {
-			result.skipReason = "low_confidence"
-			return result
+			// A reply the model wants to send but cannot confidently
+			// address still deserves an answer: downgrade to an
+			// audienceless message so the channel block can pick say or
+			// party instead of dropping it. Only a below-threshold
+			// should_communicate stays silent.
+			if result.intent == "reply" {
+				result.audienceFallback = true
+				result.confidence = 0
+				audienceKey = "broadcast"
+			} else {
+				result.skipReason = "low_confidence"
+				return result
+			}
+		} else {
+			result.audienceKey = audienceKey
+			result.audienceName = candidate.Name
 		}
-		result.audienceKey = audienceKey
-		result.audienceName = candidate.Name
 	}
 	channel := "say"
 	if answer, has := answers["channel"]; has && answer.Type == "choice" && answer.Choice != "" {
@@ -435,15 +644,57 @@ func (c *controller) runChatPipeline(job chatJob) chatDecisionResult {
 		channel = "say"
 	}
 	result.channel = channel
-	if answer, has := answers["intent"]; has && answer.Type == "choice" && chatIntentAllowed(answer.Choice) {
-		result.intent = answer.Choice
+	// Optional gameplay context: Jev's per-section include answers are
+	// validated against the allowlist and materialized from the snapshot
+	// the actor prepared. Reply intents name the selection as writer
+	// guidance so the answer addresses the actual question; ambient
+	// messages get the facts without steering.
+	sections := make(map[string]string, len(chatContextSections))
+	selected := make([]string, 0, len(chatContextSections))
+	for _, section := range chatContextSections {
+		if answer, has := answers["ctx_"+section]; !has || answer.Type != "choice" || answer.Choice != "include" {
+			continue
+		}
+		selected = append(selected, section)
+		if job.context == nil {
+			continue
+		}
+		switch section {
+		case "inventory":
+			if job.context.Inventory != "" {
+				sections["inventory"] = job.context.Inventory
+			}
+		case "quests":
+			if job.context.Quests != "" {
+				sections["quests"] = job.context.Quests
+			}
+		case "skills":
+			if job.context.Skills != "" {
+				sections["skills"] = job.context.Skills
+			}
+		case "past_tasks":
+			if job.context.PastTasks != "" {
+				sections["past_tasks"] = job.context.PastTasks
+			}
+		}
+	}
+	guidance := ""
+	if result.intent == "reply" && len(selected) > 0 {
+		guidance = "Answer the human's question using these facts about this character: " +
+			strings.Join(selected, ", ")
+	}
+	money, currentTask := "", ""
+	if job.context != nil {
+		money, currentTask = job.context.Money, job.context.CurrentTask
 	}
 	composeStart := time.Now()
 	message, composeErr := c.chatCompose.composeChat(c.chatSlots, job.profile, chatComposeRequest{
 		BotName: chatBotName(job), Intent: result.intent, Channel: result.channel,
 		Audience: result.audienceName, GroupSize: job.groupSize,
 		Chats: chatHistoryFromState(job.state),
+		Money: money, CurrentTask: currentTask, Sections: sections, Guidance: guidance,
 	})
+	result.sections = selected
 	result.composeElapsed = time.Since(composeStart)
 	if composeErr != nil {
 		result.err = composeErr.Error()
@@ -493,10 +744,10 @@ func (a *actor) handleChatDecisionResult(result chatDecisionResult) {
 	a.chatPending = false
 	// The auto-reply changes the context any in-flight decision model call saw.
 	a.revision++
-	log.Printf("agent chat_decision bot=%s event_id=%q communicate=%t skip=%q audience=%q recipient=%q channel=%q fallback=%t intent=%q source=%q noul=%.2f confidence=%.2f eval_ms=%d compose_ms=%d error=%q",
+	log.Printf("agent chat_decision bot=%s event_id=%q communicate=%t skip=%q audience=%q recipient=%q channel=%q fallback=%t audience_fallback=%t intent=%q sections=%v source=%q noul=%.2f confidence=%.2f eval_ms=%d compose_ms=%d error=%q",
 		a.botGUID, result.triggerEventID, result.communicate, result.skipReason, result.audienceKey,
-		result.audienceName, result.channel, result.channelFallback, result.intent, result.source,
-		result.noul, result.confidence, result.evaluateElapsed.Milliseconds(),
+		result.audienceName, result.channel, result.channelFallback, result.audienceFallback, result.intent,
+		result.sections, result.source, result.noul, result.confidence, result.evaluateElapsed.Milliseconds(),
 		result.composeElapsed.Milliseconds(), result.err)
 	now := time.Now()
 	if result.communicate {

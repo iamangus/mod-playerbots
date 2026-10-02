@@ -32,9 +32,12 @@ func (err *stubError) Error() string { return err.message }
 type stubChatWriter struct {
 	message string
 	err     error
+	last    *chatComposeRequest
 }
 
 func (stub *stubChatWriter) composeChat(slots chan struct{}, profile string, request chatComposeRequest) (string, error) {
+	captured := request
+	stub.last = &captured
 	if stub.err != nil {
 		return "", stub.err
 	}
@@ -61,6 +64,21 @@ func chatTestSetup(t *testing.T) (*actor, <-chan command) {
 
 func chatResultEvent(result chatDecisionResult) event {
 	return event{Type: "internal_chat_decision", chatDecision: &result}
+}
+
+func TestRecentChatsPreserveBridgeChatTypes(t *testing.T) {
+	for _, kind := range []string{"whisper", "say", "yell", "party"} {
+		t.Run(kind, func(t *testing.T) {
+			a, _ := chatTestSetup(t)
+			a.recent = nil
+			a.rememberEvent(event{Type: "chat_received", Timestamp: time.Now().UnixMilli(),
+				Payload: mustJSON(map[string]any{"chat_type": kind, "channel": "", "sender_name": "Peepee", "message": "hello"})})
+			chats := a.recentChats(time.Now())
+			if len(chats) != 1 || chats[0].Channel != kind {
+				t.Fatalf("lost incoming chat type: %+v", chats)
+			}
+		})
+	}
 }
 
 func TestChatPipelineSendsConfidentWhisperReply(t *testing.T) {
@@ -142,7 +160,7 @@ func TestChatPipelineSkipsBelowThreshold(t *testing.T) {
 	}
 }
 
-func TestChatPipelineLowConfidenceAudienceSkips(t *testing.T) {
+func TestChatPipelineLowConfidenceReplyDowngradesToSay(t *testing.T) {
 	a, _ := chatTestSetup(t)
 	chatEvent := event{EventID: "evt3", Type: "chat_received", Timestamp: time.Now().UnixMilli(),
 		Payload: json.RawMessage(`{"channel":"say","sender_name":"Peer","message":"hi"}`)}
@@ -151,13 +169,197 @@ func TestChatPipelineLowConfidenceAudienceSkips(t *testing.T) {
 	if !ok {
 		t.Fatal("chat job was not built")
 	}
+	// The exact capture pattern: noul 0.91 with audience confidence 0.24
+	// used to drop the reply entirely; it must now degrade to a say.
+	a.owner.chatEval = &stubChatEvaluator{answers: map[string]typesafeAnswer{
+		"should_communicate": {Type: "noul", Noul: 0.91},
+		"audience":           {Type: "choice", Choice: "person_0", Confidence: 0.24},
+		"channel":            {Type: "choice", Choice: "whisper", Confidence: 0.5},
+		"intent":             {Type: "choice", Choice: "reply", Confidence: 0.9},
+	}}
+	a.owner.chatCompose = &stubChatWriter{message: "hey there"}
+	result := a.owner.runChatPipeline(job)
+	if !result.communicate || !result.audienceFallback || result.skipReason != "" {
+		t.Fatalf("low-confidence reply must downgrade, got %+v", result)
+	}
+	if result.audienceName != "" || result.channel != "say" {
+		t.Fatalf("downgraded reply must be audienceless say: %+v", result)
+	}
+}
+
+func TestChatPipelineLowConfidenceGreetSkips(t *testing.T) {
+	a, _ := chatTestSetup(t)
+	chatEvent := event{EventID: "evt3b", Type: "chat_received", Timestamp: time.Now().UnixMilli(),
+		Payload: json.RawMessage(`{"channel":"say","sender_name":"Peer","message":"hi"}`)}
+	a.rememberEvent(chatEvent)
+	job, _ := a.buildChatJob(chatEvent)
 	a.owner.chatEval = &stubChatEvaluator{answers: map[string]typesafeAnswer{
 		"should_communicate": {Type: "noul", Noul: 0.9},
 		"audience":           {Type: "choice", Choice: "person_0", Confidence: 0.4},
+		"intent":             {Type: "choice", Choice: "greet", Confidence: 0.8},
 	}}
 	result := a.owner.runChatPipeline(job)
 	if result.communicate || result.skipReason != "low_confidence" {
+		t.Fatalf("non-reply with low audience confidence must still skip: %+v", result)
+	}
+}
+
+func TestChatPipelineContextSectionsAndGuidance(t *testing.T) {
+	a, _ := chatTestSetup(t)
+	chatEvent := event{EventID: "evt6", Type: "chat_received", Timestamp: time.Now().UnixMilli(),
+		Payload: json.RawMessage(`{"channel":"whisper","sender_name":"Peer","message":"what are you carrying?"}`)}
+	a.rememberEvent(chatEvent)
+	a.latest.Inventory.MoneyCopper = 123456 // 12 gold, 34 silver, 56 copper
+	a.latest.Inventory.Items = []struct {
+		ItemID uint32 `json:"item_id"`
+		Count  uint32 `json:"count"`
+		Name   string `json:"name"`
+	}{{ItemID: 1, Count: 12, Name: "Linen Cloth"}, {ItemID: 2, Count: 3, Name: "Copper Shortsword"}}
+	job, _ := a.buildChatJob(chatEvent)
+	a.owner.chatEval = &stubChatEvaluator{answers: map[string]typesafeAnswer{
+		"should_communicate": {Type: "noul", Noul: 0.9},
+		"audience":           {Type: "choice", Choice: "person_0", Confidence: 0.9},
+		"channel":            {Type: "choice", Choice: "whisper", Confidence: 0.9},
+		"intent":             {Type: "choice", Choice: "reply", Confidence: 0.9},
+		"ctx_inventory":      {Type: "choice", Choice: "include", Confidence: 0.9},
+		"ctx_quests":         {Type: "choice", Choice: "omit", Confidence: 0.9},
+		"ctx_bogus":          {Type: "choice", Choice: "include", Confidence: 0.9},
+	}}
+	a.owner.chatCompose = &stubChatWriter{message: "12 Linen Cloth and a shortsword"}
+	result := a.owner.runChatPipeline(job)
+	if !result.communicate {
 		t.Fatalf("unexpected result: %+v", result)
+	}
+	request := a.owner.chatCompose.(*stubChatWriter).last
+	if request == nil {
+		t.Fatal("writer request was not captured")
+	}
+	if request.Money != "12 gold, 34 silver, 56 copper" {
+		t.Fatalf("money not formatted: %q", request.Money)
+	}
+	if got, has := request.Sections["inventory"]; !has || !strings.Contains(got, "Linen Cloth x12") {
+		t.Fatalf("inventory section missing: %v", request.Sections)
+	}
+	if _, has := request.Sections["quests"]; has {
+		t.Fatal("omitted section must not be materialized")
+	}
+	if len(request.Sections) != 1 {
+		t.Fatalf("unknown ctx answers must be ignored: %v", request.Sections)
+	}
+	if request.Guidance == "" || !strings.Contains(request.Guidance, "inventory") {
+		t.Fatalf("reply guidance must name the selected sections: %q", request.Guidance)
+	}
+}
+
+func TestChatPipelineContextFactsWithoutGuidanceForFlavor(t *testing.T) {
+	a, _ := chatTestSetup(t)
+	chatEvent := event{EventID: "evt7", Type: "chat_received", Timestamp: time.Now().UnixMilli(),
+		Payload: json.RawMessage(`{"channel":"say","sender_name":"Peer","message":"nice weather"}`)}
+	a.rememberEvent(chatEvent)
+	job, _ := a.buildChatJob(chatEvent)
+	a.owner.chatEval = &stubChatEvaluator{answers: map[string]typesafeAnswer{
+		"should_communicate": {Type: "noul", Noul: 0.9},
+		"intent":             {Type: "choice", Choice: "flavor", Confidence: 0.9},
+		"ctx_quests":         {Type: "choice", Choice: "include", Confidence: 0.9},
+	}}
+	a.owner.chatCompose = &stubChatWriter{message: "the road calls"}
+	result := a.owner.runChatPipeline(job)
+	if !result.communicate {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	request := a.owner.chatCompose.(*stubChatWriter).last
+	if request == nil {
+		t.Fatal("writer request was not captured")
+	}
+	if request.Guidance != "" {
+		t.Fatalf("non-reply intents must not steer the writer: %q", request.Guidance)
+	}
+	if request.Money == "" {
+		t.Fatal("money is always-on context")
+	}
+}
+
+func TestChatPipelineContextDefaultsWhenUnanswered(t *testing.T) {
+	a, _ := chatTestSetup(t)
+	chatEvent := event{EventID: "evt8", Type: "chat_received", Timestamp: time.Now().UnixMilli(),
+		Payload: json.RawMessage(`{"channel":"say","sender_name":"Peer","message":"hi"}`)}
+	a.rememberEvent(chatEvent)
+	job, _ := a.buildChatJob(chatEvent)
+	a.owner.chatEval = &stubChatEvaluator{answers: map[string]typesafeAnswer{
+		"should_communicate": {Type: "noul", Noul: 0.9},
+	}}
+	a.owner.chatCompose = &stubChatWriter{message: "hello"}
+	result := a.owner.runChatPipeline(job)
+	if !result.communicate || len(result.sections) != 0 {
+		t.Fatalf("unanswered context questions default to none: %+v", result)
+	}
+	request := a.owner.chatCompose.(*stubChatWriter).last
+	if request == nil || request.Money == "" || len(request.Sections) != 0 {
+		t.Fatalf("always-on context must remain: %+v", request)
+	}
+}
+
+func TestBuildChatContextMaterial(t *testing.T) {
+	a, _ := chatTestSetup(t)
+	a.latest.Inventory.MoneyCopper = 0
+	a.latest.Inventory.Items = []struct {
+		ItemID uint32 `json:"item_id"`
+		Count  uint32 `json:"count"`
+		Name   string `json:"name"`
+	}{{ItemID: 1, Count: 5, Name: "Malachite"}, {ItemID: 2, Count: 30, Name: "Copper Ore"}, {ItemID: 3, Count: 0, Name: "Ghost"}}
+	a.latest.Quests = []questInfo{
+		{Title: "Kobold Cleanup", Objectives: []questObjective{{Count: 3, Required: 10}, {Count: 1, Required: 1}}},
+		{Title: "", Objectives: []questObjective{{Count: 1, Required: 1}}},
+	}
+	a.latest.Professions = map[string]uint32{"Herbalism": 150, "Alchemy": 87}
+	a.latest.TravelTarget = &struct {
+		DestinationName string    `json:"destination_name"`
+		IsTraveling     bool      `json:"is_traveling"`
+		IsWorking       bool      `json:"is_working"`
+		Arrived         bool      `json:"arrived"`
+		Position        []float64 `json:"position"`
+		MapID           uint32    `json:"map_id"`
+	}{DestinationName: "Goldshire", IsTraveling: true}
+	a.rememberEvent(event{Type: "task_result", Timestamp: time.Now().UnixMilli(),
+		Payload: mustJSON(map[string]any{"kind": "kill", "status": "done", "completed": 5, "goal": 5})})
+
+	material := a.buildChatContext()
+	if material.Money != "no money" {
+		t.Fatalf("zero money must say so: %q", material.Money)
+	}
+	// No current task and travel target present: activity line comes from travel.
+	if material.CurrentTask != "traveling to Goldshire" {
+		t.Fatalf("travel activity missing: %q", material.CurrentTask)
+	}
+	if got := material.Inventory; !strings.HasPrefix(got, "Copper Ore x30") || !strings.Contains(got, "Malachite x5") ||
+		strings.Contains(got, "Ghost") {
+		t.Fatalf("inventory must be count-sorted and skip empties: %q", got)
+	}
+	if got := material.Quests; got != "Kobold Cleanup (3/10, 1/1)" {
+		t.Fatalf("quest summary wrong: %q", got)
+	}
+	if got := material.Skills; got != "Alchemy 87, Herbalism 150" {
+		t.Fatalf("skills summary wrong: %q", got)
+	}
+	if got := material.PastTasks; got != "kill: done 5/5" {
+		t.Fatalf("past tasks summary wrong: %q", got)
+	}
+}
+
+func TestBuildChatContextPrefersCurrentTask(t *testing.T) {
+	a, _ := chatTestSetup(t)
+	a.state.Task = &task{Kind: "craft_item", TargetName: "Copper Chain"}
+	a.latest.TravelTarget = &struct {
+		DestinationName string    `json:"destination_name"`
+		IsTraveling     bool      `json:"is_traveling"`
+		IsWorking       bool      `json:"is_working"`
+		Arrived         bool      `json:"arrived"`
+		Position        []float64 `json:"position"`
+		MapID           uint32    `json:"map_id"`
+	}{DestinationName: "Goldshire", IsTraveling: true}
+	material := a.buildChatContext()
+	if material.CurrentTask != "craft_item Copper Chain" {
+		t.Fatalf("current task must win over travel: %q", material.CurrentTask)
 	}
 }
 
