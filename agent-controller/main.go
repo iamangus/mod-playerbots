@@ -64,6 +64,19 @@ type config struct {
 	socialOfflineGrace time.Duration
 	roadPreference     bool
 	roadCorridors      []roadCorridor
+	typesafeEndpoint   string
+	typesafeAPIKey     string
+	typesafeModel      string
+	chatRequestTimeout time.Duration
+	// Chat decision gates. Jev decides whether/whom/how to communicate; the
+	// thresholds and every budget below are enforced in code.
+	chatDecisionThreshold  float64
+	chatAudienceConfidence float64
+	chatMinInterval        time.Duration
+	chatWindow             time.Duration
+	chatMaxPerWindow       uint32
+	chatWriterMaxTokens    uint32
+	chatJitter             time.Duration
 }
 
 func loadConfig() (config, error) {
@@ -83,6 +96,18 @@ func loadConfig() (config, error) {
 		socialProgression:  envBool("AGENT_SOCIAL_PROGRESSION", false),
 		socialRealm:        envUint("AGENT_SOCIAL_REALM", 1),
 		socialOfflineGrace: envDuration("AGENT_SOCIAL_OFFLINE_GRACE", 10*time.Minute),
+		typesafeEndpoint:   envOr("AGENT_TYPESAFE_ENDPOINT", "https://api.typesafe.ai/v1/systemone"),
+		typesafeAPIKey:     strings.TrimSpace(os.Getenv("AGENT_TYPESAFE_API_KEY")),
+		typesafeModel:      envOr("AGENT_TYPESAFE_MODEL", "jev-latest"),
+		chatRequestTimeout: envDuration("AGENT_CHAT_TIMEOUT", 8*time.Second),
+
+		chatDecisionThreshold:  envFloat("AGENT_CHAT_DECIDE_THRESHOLD", 0.7),
+		chatAudienceConfidence: envFloat("AGENT_CHAT_AUDIENCE_CONFIDENCE_MIN", 0.6),
+		chatMinInterval:        envDuration("AGENT_CHAT_MIN_INTERVAL", 20*time.Second),
+		chatWindow:             envDuration("AGENT_CHAT_WINDOW", 5*time.Minute),
+		chatMaxPerWindow:       envUint("AGENT_CHAT_MAX_PER_WINDOW", 5),
+		chatWriterMaxTokens:    envUint("AGENT_CHAT_WRITER_MAX_TOKENS", 80),
+		chatJitter:             envDuration("AGENT_CHAT_JITTER", 1200*time.Millisecond),
 	}
 	if cfg.modelEndpoint == "" || cfg.modelName == "" {
 		return config{}, errors.New("LLM_ENDPOINT and LLM_MODEL are required")
@@ -95,6 +120,14 @@ func loadConfig() (config, error) {
 	}
 	if cfg.maxTokens > 2048 {
 		cfg.maxTokens = 2048
+	}
+	cfg.chatDecisionThreshold = clampFloat(cfg.chatDecisionThreshold, 0, 1)
+	cfg.chatAudienceConfidence = clampFloat(cfg.chatAudienceConfidence, 0, 1)
+	if cfg.chatMaxPerWindow == 0 {
+		cfg.chatMaxPerWindow = 1
+	}
+	if cfg.chatMaxPerWindow > 60 {
+		cfg.chatMaxPerWindow = 60
 	}
 	cfg.roadPreference = envBool("AGENT_ROAD_PREFERENCE", false)
 	if cfg.roadPreference {
@@ -168,20 +201,43 @@ func envUint(key string, fallback uint32) uint32 {
 	return uint32(parsed)
 }
 
+func envFloat(key string, fallback float64) float64 {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return fallback
+	}
+	return parsed
+}
+
+func clampFloat(value, minimum, maximum float64) float64 {
+	if value < minimum {
+		return minimum
+	}
+	if value > maximum {
+		return maximum
+	}
+	return value
+}
+
 type event struct {
-	Version    int             `json:"version"`
-	EventID    string          `json:"event_id"`
-	Type       string          `json:"type"`
-	BotGUID    string          `json:"bot_guid"`
-	OwnerToken string          `json:"owner_token"`
-	OwnerEpoch string          `json:"owner_epoch"`
-	Timestamp  int64           `json:"timestamp_unix_ms"`
-	Shard      uint32          `json:"-"`
-	RequestID  string          `json:"request_id"`
-	Payload    json.RawMessage `json:"payload"`
-	decision   *decisionResult `json:"-"`
-	ack        func() error    `json:"-"`
-	nak        func() error    `json:"-"`
+	Version      int                 `json:"version"`
+	EventID      string              `json:"event_id"`
+	Type         string              `json:"type"`
+	BotGUID      string              `json:"bot_guid"`
+	OwnerToken   string              `json:"owner_token"`
+	OwnerEpoch   string              `json:"owner_epoch"`
+	Timestamp    int64               `json:"timestamp_unix_ms"`
+	Shard        uint32              `json:"-"`
+	RequestID    string              `json:"request_id"`
+	Payload      json.RawMessage     `json:"payload"`
+	decision     *decisionResult     `json:"-"`
+	chatDecision *chatDecisionResult `json:"-"`
+	ack          func() error        `json:"-"`
+	nak          func() error        `json:"-"`
 }
 
 type decisionJob struct {
@@ -481,6 +537,8 @@ type persistedAgent struct {
 	UnavailableDestinations map[string]time.Time           `json:"unavailable_destinations,omitempty"`
 	ClusterGroupInvite      bool                           `json:"cluster_group_invite,omitempty"`
 	ClusterSocialSession    bool                           `json:"cluster_social_session,omitempty"`
+	ChatRecent              []int64                        `json:"chat_recent,omitempty"`
+	ChatLastSent            int64                          `json:"chat_last_sent,omitempty"`
 }
 
 type recentEvent struct {
@@ -491,20 +549,24 @@ type recentEvent struct {
 }
 
 type controller struct {
-	cfg        config
-	instanceID string
-	nats       *nats.Conn
-	jetstream  nats.JetStreamContext
-	redis      *redis.Client
-	model      *modelClient
-	population *populationManager
-	actorsMu   sync.Mutex
-	actors     map[string]*actor
-	modelSlots chan struct{}
-	modelJobs  chan decisionJob
-	shards     []uint32
-	ownersMu   sync.Mutex
-	owners     map[string]map[uint32]time.Time
+	cfg         config
+	instanceID  string
+	nats        *nats.Conn
+	jetstream   nats.JetStreamContext
+	redis       *redis.Client
+	model       *modelClient
+	chatEval    chatEvaluator
+	chatCompose chatComposer
+	population  *populationManager
+	actorsMu    sync.Mutex
+	actors      map[string]*actor
+	modelSlots  chan struct{}
+	modelJobs   chan decisionJob
+	chatSlots   chan struct{}
+	chatJobs    chan chatJob
+	shards      []uint32
+	ownersMu    sync.Mutex
+	owners      map[string]map[uint32]time.Time
 }
 
 type actor struct {
@@ -534,6 +596,7 @@ type actor struct {
 	lastDecisionBlockAt   time.Time
 	lastTaskWait          string
 	lastTaskWaitAt        time.Time
+	chatPending           bool
 }
 
 func main() {
@@ -580,6 +643,21 @@ func main() {
 		owners:    make(map[string]map[uint32]time.Time),
 	}
 	c.startModelWorkers(workers)
+	chatWorkers := envUint("AGENT_CHAT_WORKERS", 8)
+	if chatWorkers == 0 {
+		chatWorkers = 1
+	}
+	c.chatSlots = make(chan struct{}, int(chatWorkers))
+	c.chatJobs = make(chan chatJob, int(queueCapacity))
+	c.chatEval = newTypesafeClient(cfg)
+	c.chatCompose = c.model
+	c.startChatWorkers(chatWorkers)
+	if c.chatEnabled() {
+		log.Printf("chat decision pipeline enabled model=%s endpoint=%s threshold=%.2f audience_confidence=%.2f",
+			cfg.typesafeModel, cfg.typesafeEndpoint, cfg.chatDecisionThreshold, cfg.chatAudienceConfidence)
+	} else {
+		log.Printf("chat decision pipeline disabled: AGENT_TYPESAFE_API_KEY not set; chat falls back to the decision model")
+	}
 	if populationCfg := loadPopulationConfig(); populationCfg.enabled {
 		c.population = newPopulationManager(c, populationCfg)
 		go c.population.run()
@@ -983,6 +1061,10 @@ func (a *actor) handleEvent(incoming event) {
 		a.handleDecisionResult(*incoming.decision)
 		return
 	}
+	if incoming.chatDecision != nil {
+		a.handleChatDecisionResult(*incoming.chatDecision)
+		return
+	}
 	if a.state.OwnerToken != "" && incoming.OwnerToken != a.state.OwnerToken && incoming.Type != "bot_online" {
 		return
 	}
@@ -1175,6 +1257,11 @@ func (a *actor) handleEvent(incoming event) {
 			a.persist()
 		}
 		a.online = true
+		if incoming.Type == "chat_received" && a.scheduleChatPipeline(incoming) {
+			// The communication pipeline owns this event; the ordinary task
+			// decision resumes when its result lands.
+			return
+		}
 		a.pendingDecisionReason = incoming.Type
 		if a.bridgeActive {
 			a.requestSnapshot()
@@ -1395,7 +1482,12 @@ func (a *actor) applyTool(call toolCall) {
 	}
 	switch call.Name {
 	case "send_chat":
+		if block := a.chatBudgetBlock(time.Now()); block != "" {
+			a.rejectTool(call.Name, "chat budget exhausted: "+block)
+			return
+		}
 		a.sendPrimitive("send_chat", rawMapToAny(args))
+		a.recordChatSent(time.Now())
 	case "begin_trade", "accept_trade", "cancel_trade", "offer_trade_money", "offer_trade_item":
 		if current := a.state.Task; current != nil && current.CraftTradeStage != "" {
 			a.rejectTool(call.Name, "a negotiated acquisition owns the trade; stop_task before manual trade controls")

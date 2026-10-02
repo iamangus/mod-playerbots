@@ -25,6 +25,40 @@ no free repairs, instant revival, or teleport to the corpse. Cross-map, arena an
 battleground recovery remain unsupported. Ordinary navigation to a spirit healer
 does not substitute for recovery, and legacy autonomous death actions stay disabled.
 
+## Chat decision pipeline (TypeSafe Jev)
+
+Incoming chat is decided by TypeSafe's System One model (Jev), not by the task
+model. One evaluation request carries the whole battery against a compact state
+(bot summary, current task, recent chat, enumerated candidates):
+
+- `should_communicate` (noul): gate; below `AGENT_CHAT_DECIDE_THRESHOLD` the bot
+  stays silent.
+- `audience` (choice): recent chat senders, group members and nearby players,
+  enumerated from the native snapshot with stable `person_N` keys. The model
+  cannot address anyone outside the snapshot; unknown or low-confidence
+  (`AGENT_CHAT_AUDIENCE_CONFIDENCE_MIN`) audience answers send nothing.
+- `channel` (choice): only channels this code can validate (say, yell, general,
+  whisper with a person, party with a group). Invalid combinations fall back to
+  `/say`.
+- `intent` (choice): reply / greet / assist_offer / recruit / flavor, used only
+  to steer the writer.
+
+When the gate opens, the configured text model writes only the message body
+from a tool-free prompt; it cannot start actions. A writer failure sends the
+canned line `Sorry, I can't talk right now.` and counts against the same
+budget. Every dispatch — writer, canned, or the task model's own `send_chat` —
+is bounded by a persisted per-bot budget (`AGENT_CHAT_MIN_INTERVAL`,
+`AGENT_CHAT_WINDOW`, `AGENT_CHAT_MAX_PER_WINDOW`). Decision metadata is logged
+without chat contents. With `AGENT_TYPESAFE_API_KEY` unset the pipeline is
+disabled and chat decisions fall back to the ordinary decision model. The task
+decision resumes through the normal snapshot path after each pipeline result.
+
+Configuration: `AGENT_TYPESAFE_ENDPOINT` (default
+`https://api.typesafe.ai/v1/systemone`), `AGENT_TYPESAFE_API_KEY`,
+`AGENT_TYPESAFE_MODEL` (default `jev-latest`), `AGENT_CHAT_TIMEOUT`,
+`AGENT_CHAT_WORKERS`, `AGENT_CHAT_WRITER_MAX_TOKENS`, `AGENT_CHAT_JITTER`,
+plus the thresholds and budgets above.
+
 The controller requires:
 
 - `TC9_NATS_URL`, `AGENT_STATE_REDIS_URL`, and `AGENT_SHARD_COUNT`;

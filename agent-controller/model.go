@@ -12,13 +12,14 @@ import (
 )
 
 type modelClient struct {
-	endpoint        string
-	apiKey          string
-	model           string
-	timeout         time.Duration
-	maxTokens       uint32
-	reasoningEffort string
-	client          *http.Client
+	endpoint            string
+	apiKey              string
+	model               string
+	timeout             time.Duration
+	maxTokens           uint32
+	chatWriterMaxTokens uint32
+	reasoningEffort     string
+	client              *http.Client
 }
 
 type modelToolCall struct {
@@ -27,14 +28,22 @@ type modelToolCall struct {
 }
 
 func newModelClient(cfg config) *modelClient {
+	writerTokens := cfg.chatWriterMaxTokens
+	if writerTokens < 32 {
+		writerTokens = 32
+	}
+	if writerTokens > 512 {
+		writerTokens = 512
+	}
 	return &modelClient{
-		endpoint:        cfg.modelEndpoint,
-		apiKey:          cfg.modelAPIKey,
-		model:           cfg.modelName,
-		timeout:         cfg.requestTimeout,
-		maxTokens:       cfg.maxTokens,
-		reasoningEffort: cfg.reasoningEffort,
-		client:          &http.Client{Timeout: cfg.requestTimeout},
+		endpoint:            cfg.modelEndpoint,
+		apiKey:              cfg.modelAPIKey,
+		model:               cfg.modelName,
+		timeout:             cfg.requestTimeout,
+		maxTokens:           cfg.maxTokens,
+		chatWriterMaxTokens: writerTokens,
+		reasoningEffort:     cfg.reasoningEffort,
+		client:              &http.Client{Timeout: cfg.requestTimeout},
 	}
 }
 
@@ -136,6 +145,82 @@ func (client *modelClient) decide(slots chan struct{}, profile string, memories 
 	return &toolCall{Name: call.Name, Arguments: call.Arguments}, nil
 }
 
+// composeChat writes only the message body for an already-made communication
+// decision. The writer never sees tools or task state, so its output cannot
+// start actions; the controller validates the text before dispatching.
+func (client *modelClient) composeChat(slots chan struct{}, profile string, request chatComposeRequest) (string, error) {
+	select {
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
+	case <-time.After(client.timeout):
+		return "", fmt.Errorf("model concurrency limit timed out")
+	}
+	system := "You write ONE short in-character chat message for a persistent World of Warcraft 3.3.5a playerbot. " +
+		"Output only the message text on a single line: no quotes, no stage directions, no lists, no name prefixes. " +
+		"Stay family-friendly and in character. Match the language of the recent chat. At most 200 characters. Profile: " + profile
+	observation, err := json.Marshal(map[string]any{
+		"bot_name": request.BotName, "intent": request.Intent, "channel": request.Channel,
+		"audience": request.Audience, "group_size": request.GroupSize, "recent_chat": request.Chats,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode chat writer request: %w", err)
+	}
+	requestBody := map[string]any{
+		"model":      client.model,
+		"max_tokens": client.chatWriterMaxTokens,
+		"messages": []map[string]string{
+			{"role": "system", "content": system},
+			{"role": "user", "content": string(observation)},
+		},
+	}
+	if reasoning := client.reasoningParam(); reasoning != nil {
+		requestBody["reasoning"] = reasoning
+	}
+	body, err := json.Marshal(requestBody)
+	if err != nil {
+		return "", fmt.Errorf("encode chat writer request: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), client.timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, client.endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("create chat writer request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if client.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+client.apiKey)
+	}
+	resp, err := client.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("chat writer request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	responseBytes, err := io.ReadAll(io.LimitReader(resp.Body, maxLLMResponseBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read chat writer response: %w", err)
+	}
+	if len(responseBytes) > maxLLMResponseBytes {
+		return "", fmt.Errorf("chat writer response exceeded size limit")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("chat writer returned HTTP %d", resp.StatusCode)
+	}
+	var decoded struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(responseBytes, &decoded); err != nil {
+		return "", fmt.Errorf("decode chat writer response: %w", err)
+	}
+	if len(decoded.Choices) == 0 {
+		return "", fmt.Errorf("chat writer returned no choices")
+	}
+	return strings.TrimSpace(decoded.Choices[0].Message.Content), nil
+}
+
 func systemPrompt(profile string) string {
 	return "You control one persistent World of Warcraft 3.3.5a playerbot. The live state in the observation is authoritative. " +
 		"All high-level quest, kill-count, gathering, and social loops are executed by this external agent. AzerothCore " +
@@ -165,6 +250,8 @@ func systemPrompt(profile string) string {
 		"The snapshot lists quests you can take nearby in available_quests; to grow your quest log pick one and call " +
 		"accept_quest, then work_on_quest on it. " +
 		"Reply to any message in the same chat channel it was said in, whether the sender is a player or another bot. " +
+		"An event of type chat_auto_replied means the separate communication pipeline already answered that message: " +
+		"do not send another reply to it and do not restate its content. " +
 		"Direct requests from real players outrank your current task: acknowledge and act on them. " +
 		"If a player asks to join your group and it is full (5/5), say so in that channel and " +
 		"point them to a bot outside the group; if you can invite, invite immediately instead of just agreeing in chat. " +
