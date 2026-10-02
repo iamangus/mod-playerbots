@@ -262,7 +262,12 @@ func abilitiesParts(snapshot snapshot) []string {
 	if roles, has := classRoles[snapshot.Bot.ClassID]; has && len(roles) > 0 {
 		ordered := append([]string(nil), roles...)
 		sort.Strings(ordered)
-		parts = append(parts, "can play "+strings.Join(ordered, "/"))
+		parts = append(parts, "class roles (not verified spec or readiness) "+strings.Join(ordered, "/"))
+	}
+	if len(snapshot.Abilities) > 0 {
+		names := append([]string(nil), snapshot.Abilities...)
+		sort.Strings(names)
+		parts = append(parts, "action-bar spells (partial spellbook) "+strings.Join(names, ", "))
 	}
 	recipes := make([]string, 0, len(snapshot.CraftingRecipes))
 	for _, recipe := range snapshot.CraftingRecipes {
@@ -418,6 +423,11 @@ func socialParts(snapshot snapshot, state persistedAgent) []string {
 			parts = append(parts, trimmed)
 		}
 	}
+	for _, reputation := range snapshot.Reputations {
+		if reputation.Faction != "" {
+			parts = append(parts, fmt.Sprintf("reputation %s: %d", reputation.Faction, reputation.Standing))
+		}
+	}
 	return parts
 }
 
@@ -456,7 +466,7 @@ func economyParts(snapshot snapshot, currentTask *task) []string {
 			}
 			name, has := itemNames[goal.ItemID]
 			if !has {
-				continue
+				name = fmt.Sprintf("item %d (name unknown)", goal.ItemID)
 			}
 			needs = append(needs, fmt.Sprintf("%s x%d", name, goal.Count))
 		}

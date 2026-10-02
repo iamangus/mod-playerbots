@@ -344,7 +344,7 @@ func TestBuildChatContextMaterial(t *testing.T) {
 		t.Fatalf("quest summary wrong: %q", got)
 	}
 	if got := material.Abilities; !strings.Contains(got, "professions Alchemy 87, Herbalism 150") ||
-		!strings.Contains(got, "can play") {
+		!strings.Contains(got, "class roles (not verified spec or readiness)") {
 		t.Fatalf("abilities summary wrong: %q", got)
 	}
 	if got := material.ActivityDetail; got != "kill: done 5/5" {
@@ -368,6 +368,7 @@ func TestBuildChatContextExtendedGroups(t *testing.T) {
 	a.latest.Hearthstone = "Northshire Valley"
 	a.latest.FlightPaths = []string{"Stormwind, Elwynn", "Ironforge, Dun Morogh"}
 	a.latest.MailCount = 2
+	a.latest.Abilities = []string{"Lesser Heal", "Smite"}
 	a.latest.Reputations = []struct {
 		Faction  string `json:"faction"`
 		Standing int32  `json:"standing"`
@@ -407,6 +408,7 @@ func TestBuildChatContextExtendedGroups(t *testing.T) {
 		t.Fatalf("possessions must include worn gear and bag space: %q", material.Possessions)
 	}
 	if !strings.Contains(material.Abilities, "recipes Copper Chain") ||
+		!strings.Contains(material.Abilities, "action-bar spells (partial spellbook) Lesser Heal, Smite") ||
 		!strings.Contains(material.Abilities, "flight paths Ironforge, Dun Morogh, Stormwind, Elwynn") {
 		t.Fatalf("abilities must include recipes and flight paths: %q", material.Abilities)
 	}
@@ -423,8 +425,8 @@ func TestBuildChatContextExtendedGroups(t *testing.T) {
 		!strings.Contains(material.Economy, "hearthstone bound to Northshire Valley") {
 		t.Fatalf("economy incomplete: %q", material.Economy)
 	}
-	if strings.Contains(material.Economy, "reputation") {
-		t.Fatal("reputations are native-only data and must not leak unformatted")
+	if !strings.Contains(material.Social, "reputation Stormwind: 1500") {
+		t.Fatalf("reputations must reach the writer: %q", material.Social)
 	}
 }
 

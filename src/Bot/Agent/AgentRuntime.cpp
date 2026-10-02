@@ -1389,11 +1389,9 @@ struct AgentRuntime::Impl
         if (uint32 const guildId = bot->GetGuildId())
         {
             Guild const* guild = sGuildMgr->GetGuildById(guildId);
-            Guild::Member const* member = guild ? guild->GetMember(bot->GetGUID()) : nullptr;
-            Guild::RankInfo const* rank = guild && member ? guild->GetRankInfo(member->GetRankId()) : nullptr;
-            if (guild && member && rank)
+            if (guild && guild->GetMember(bot->GetGUID()))
                 result << ",\"guild\":{\"name\":\"" << EscapeJson(guild->GetName()) << "\",\"rank\":\""
-                       << EscapeJson(rank->GetName()) << "\"}";
+                       << EscapeJson(guild->GetMemberRankName(bot->GetGUID())) << "\"}";
             else
                 result << ",\"guild\":null";
         }
