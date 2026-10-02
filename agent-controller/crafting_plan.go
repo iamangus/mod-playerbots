@@ -13,6 +13,7 @@ const (
 type craftReagent struct {
 	ItemID uint32 `json:"item_id"`
 	Count  uint32 `json:"count"`
+	Name   string `json:"name,omitempty"`
 }
 
 type craftRecipeInfo struct {

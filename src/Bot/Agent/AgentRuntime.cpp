@@ -45,6 +45,7 @@ using boost::placeholders::_1;
 #include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
 #include "QuestDef.h"
+#include "ReputationMgr.h"
 #include "SharedDefines.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
@@ -97,6 +98,7 @@ constexpr uint32 AGENT_MAX_QUEST_ITEM_SOURCES = 32;
 constexpr uint32 AGENT_RECOVERY_TIMEOUT_MS = 15 * MINUTE * IN_MILLISECONDS;
 constexpr uint32 AGENT_MAX_VENDOR_OFFERS_PER_NPC = 12;
 constexpr uint32 AGENT_MAX_ACTION_BAR_ABILITIES = 30;
+constexpr uint32 AGENT_MAX_KNOWN_ABILITIES = 256;
 constexpr uint32 AGENT_MAX_FLIGHT_PATHS = 24;
 constexpr uint32 AGENT_MAX_REPUTATIONS = 12;
 constexpr uint32 AGENT_MAX_CRAFTING_RECIPES = 40;
@@ -857,6 +859,11 @@ struct AgentRuntime::Impl
                << ",\"zone_id\":" << bot->GetZoneId() << ",\"position\":[" << bot->GetPositionX() << ","
                << bot->GetPositionY() << "," << bot->GetPositionZ() << "]";
 
+        AreaTableEntry const* area = GetAreaEntryByAreaID(bot->GetAreaId());
+        AreaTableEntry const* zone = GetAreaEntryByAreaID(bot->GetZoneId());
+        result << ",\"area_name\":\"" << EscapeJson(area && area->area_name[0] ? area->area_name[0] : "")
+               << "\",\"zone_name\":\"" << EscapeJson(zone && zone->area_name[0] ? zone->area_name[0] : "") << "\"";
+
         Group* group = bot->GetGroup();
         result << ",\"group_size\":" << (group ? group->GetMembersCount() : 1) << ",\"group_leader_guid\":\""
                << EscapeJson(group ? AgentBridgeTransport::BotToken(group->GetLeaderGUID()) : "")
@@ -1006,7 +1013,9 @@ struct AgentRuntime::Impl
                         result << ",";
                     firstReagent = false;
                     result << "{\"item_id\":" << info->Reagent[index] << ",\"count\":" << info->ReagentCount[index]
-                           << "}";
+                           << ",\"name\":\"";
+                    ItemTemplate const* reagent = sObjectMgr->GetItemTemplate(uint32(info->Reagent[index]));
+                    result << EscapeJson(reagent ? reagent->Name1 : "") << "\"}";
                 }
                 result << "]}";
                 ++recipeCount;
@@ -1424,6 +1433,29 @@ struct AgentRuntime::Impl
             result << "]";
         }
 
+        result << ",\"known_abilities\":[";
+        std::set<std::string> knownAbilities;
+        for (auto const& [spellId, learned] : bot->GetSpellMap())
+        {
+            SpellInfo const* spell = sSpellMgr->GetSpellInfo(spellId);
+            if (!learned || learned->State == PLAYERSPELL_REMOVED || !learned->Active ||
+                !learned->IsInSpec(bot->GetActiveSpec()) || !spell || spell->IsPassive() ||
+                spell->HasAttribute(SPELL_ATTR0_IS_TRADESKILL) || !spell->SpellName[0])
+                continue;
+            knownAbilities.insert(spell->SpellName[0]);
+        }
+        uint32 knownCount = 0;
+        for (std::string const& name : knownAbilities)
+        {
+            if (knownCount >= AGENT_MAX_KNOWN_ABILITIES)
+                break;
+            if (knownCount++)
+                result << ",";
+            result << "\"" << EscapeJson(name) << "\"";
+        }
+        result << "],\"known_abilities_total\":" << knownAbilities.size()
+               << ",\"inventory_stacks_total\":" << itemCounts.size();
+
         // Hearthstone bind location, when the character has one.
         std::string hearthstoneArea;
         if (uint16 const homebindAreaId = bot->GetHomebindAreaId())
@@ -1437,13 +1469,16 @@ struct AgentRuntime::Impl
         {
             bool firstPath = true;
             uint32 pathCount = 0;
-            for (uint32 nodeId = 1; nodeId < sTaxiNodesStore.GetNumRows() && pathCount < AGENT_MAX_FLIGHT_PATHS;
-                 ++nodeId)
+            uint32 pathTotal = 0;
+            for (uint32 nodeId = 1; nodeId < sTaxiNodesStore.GetNumRows(); ++nodeId)
             {
                 if (!bot->m_taxi.IsTaximaskNodeKnown(nodeId))
                     continue;
                 TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(nodeId);
                 if (!node || !node->name[0])
+                    continue;
+                ++pathTotal;
+                if (pathCount >= AGENT_MAX_FLIGHT_PATHS)
                     continue;
                 if (!firstPath)
                     result << ",";
@@ -1451,10 +1486,14 @@ struct AgentRuntime::Impl
                 result << "\"" << EscapeJson(node->name[0]) << "\"";
                 ++pathCount;
             }
-            result << "]";
+            result << "],\"flight_paths_total\":" << pathTotal;
         }
 
-        result << ",\"bag_slots_free\":" << bot->GetFreeInventorySpace() << ",\"mail_count\":" << bot->GetMailSize();
+        result << ",\"bag_slots_free\":" << bot->GetFreeInventorySpace();
+        // Local mail caches are not authoritative when ToCloud9 owns mail.
+        if (!agent_bridge::ClusterEconomyServiceOwned())
+            result << ",\"mail_count\":" << bot->GetMailSize()
+                   << ",\"unread_mail_count\":" << static_cast<uint32>(bot->unReadMails);
 
         // Notable reputations: most extreme standings first, hidden
         // factions excluded, bounded.
@@ -1465,7 +1504,7 @@ struct AgentRuntime::Impl
             {
                 if (state.Flags & FACTION_FLAG_HIDDEN)
                     continue;
-                notable.emplace_back(state.Standing, &state);
+                notable.emplace_back(bot->GetReputationMgr().GetReputation(state.ID), &state);
             }
             std::sort(notable.begin(), notable.end(),
                       [](auto const& left, auto const& right)
@@ -1489,7 +1528,7 @@ struct AgentRuntime::Impl
                 result << "{\"faction\":\"" << EscapeJson(faction->name[0]) << "\",\"standing\":" << standing << "}";
                 ++repCount;
             }
-            result << "]";
+            result << "],\"reputations_total\":" << notable.size();
         }
 
         result << "}";

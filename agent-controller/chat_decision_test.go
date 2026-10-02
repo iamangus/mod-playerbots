@@ -360,14 +360,16 @@ func TestBuildChatContextExtendedGroups(t *testing.T) {
 		ItemID uint32 `json:"item_id"`
 		Name   string `json:"name"`
 	}{{Slot: 16, ItemID: 1, Name: "Worn Mace"}, {Slot: 4, ItemID: 2, Name: "Linen Vest"}}
-	a.latest.BagSlotsFree = 3
+	freeSlots := uint32(3)
+	a.latest.BagSlotsFree = &freeSlots
 	a.latest.Guild = &struct {
 		Name string `json:"name"`
 		Rank string `json:"rank"`
 	}{Name: "Northshire Watch", Rank: "Initiate"}
 	a.latest.Hearthstone = "Northshire Valley"
 	a.latest.FlightPaths = []string{"Stormwind, Elwynn", "Ironforge, Dun Morogh"}
-	a.latest.MailCount = 2
+	mailCount := uint32(2)
+	a.latest.MailCount = &mailCount
 	a.latest.Abilities = []string{"Lesser Heal", "Smite"}
 	a.latest.Reputations = []struct {
 		Faction  string `json:"faction"`
@@ -403,13 +405,13 @@ func TestBuildChatContextExtendedGroups(t *testing.T) {
 	if !strings.Contains(material.Character, "level 10") || !strings.Contains(material.Character, "guild Northshire Watch (Initiate)") {
 		t.Fatalf("character line incomplete: %q", material.Character)
 	}
-	if !strings.Contains(material.Possessions, "wearing Linen Vest, Worn Mace") ||
+	if !strings.Contains(material.Possessions, "wearing Linen Vest") || !strings.Contains(material.Possessions, "wearing Worn Mace") ||
 		!strings.Contains(material.Possessions, "3 free bag slots") {
 		t.Fatalf("possessions must include worn gear and bag space: %q", material.Possessions)
 	}
-	if !strings.Contains(material.Abilities, "recipes Copper Chain") ||
-		!strings.Contains(material.Abilities, "action-bar spells (partial spellbook) Lesser Heal, Smite") ||
-		!strings.Contains(material.Abilities, "flight paths Ironforge, Dun Morogh, Stormwind, Elwynn") {
+	if !strings.Contains(material.Abilities, "recipe Copper Chain") ||
+		!strings.Contains(material.Abilities, "action-bar spell (partial spellbook) Lesser Heal") ||
+		!strings.Contains(material.Abilities, "flight path Ironforge, Dun Morogh") {
 		t.Fatalf("abilities must include recipes and flight paths: %q", material.Abilities)
 	}
 	if !strings.Contains(material.ActivityDetail, "task craft_item Copper Chain (1/3)") ||

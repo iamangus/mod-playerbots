@@ -372,6 +372,8 @@ type snapshot struct {
 		InFlight           bool      `json:"in_flight"`
 		MapID              uint32    `json:"map_id"`
 		ZoneID             uint32    `json:"zone_id"`
+		ZoneName           string    `json:"zone_name,omitempty"`
+		AreaName           string    `json:"area_name,omitempty"`
 		Position           []float64 `json:"position"`
 		GroupSize          uint32    `json:"group_size"`
 		GroupLeaderGUID    string    `json:"group_leader_guid"`
@@ -409,12 +411,18 @@ type snapshot struct {
 		Name string `json:"name"`
 		Rank string `json:"rank"`
 	} `json:"guild,omitempty"`
-	Abilities    []string `json:"abilities,omitempty"`
-	Hearthstone  string   `json:"hearthstone_area,omitempty"`
-	FlightPaths  []string `json:"flight_paths,omitempty"`
-	BagSlotsFree uint32   `json:"bag_slots_free,omitempty"`
-	MailCount    uint32   `json:"mail_count,omitempty"`
-	Reputations  []struct {
+	Abilities            []string `json:"abilities,omitempty"`
+	KnownAbilities       []string `json:"known_abilities,omitempty"`
+	KnownAbilitiesTotal  *uint32  `json:"known_abilities_total,omitempty"`
+	InventoryStacksTotal *uint32  `json:"inventory_stacks_total,omitempty"`
+	FlightPathsTotal     *uint32  `json:"flight_paths_total,omitempty"`
+	ReputationsTotal     *uint32  `json:"reputations_total,omitempty"`
+	UnreadMailCount      *uint32  `json:"unread_mail_count,omitempty"`
+	Hearthstone          string   `json:"hearthstone_area,omitempty"`
+	FlightPaths          []string `json:"flight_paths,omitempty"`
+	BagSlotsFree         *uint32  `json:"bag_slots_free,omitempty"`
+	MailCount            *uint32  `json:"mail_count,omitempty"`
+	Reputations          []struct {
 		Faction  string `json:"faction"`
 		Standing int32  `json:"standing"`
 	} `json:"reputations,omitempty"`

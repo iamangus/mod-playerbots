@@ -101,10 +101,6 @@ type chatContextMaterial struct {
 }
 
 const (
-	chatContextItemLimit     = 10
-	chatContextRecipeLimit   = 8
-	chatContextQuestLimit    = 5
-	chatContextNearbyLimit   = 5
 	chatContextTaskLimit     = 5
 	chatContextMemoryLimit   = 3
 	chatContextVendorLimit   = 5
@@ -138,8 +134,9 @@ func moneyLine(copper uint32) string {
 
 // buildChatContext materializes the bounded gameplay slices from the latest
 // snapshot and actor state.
-func (a *actor) buildChatContext() *chatContextMaterial {
+func (a *actor) buildChatContext(focus ...string) *chatContextMaterial {
 	material := &chatContextMaterial{}
+	question := strings.Join(focus, " ")
 	material.Money = moneyLine(a.latest.Inventory.MoneyCopper)
 
 	material.Character = joinCapped(characterParts(a.latest), chatContextSectionBytes)
@@ -152,18 +149,26 @@ func (a *actor) buildChatContext() *chatContextMaterial {
 		if task.GoalCount > 0 {
 			current += fmt.Sprintf(" (%d/%d)", task.Completed, task.GoalCount)
 		}
-		material.Activity = current
+		material.Activity = trimUTF8(current, chatContextSectionBytes)
 	} else if travel := a.latest.TravelTarget; travel != nil && travel.IsTraveling && travel.DestinationName != "" {
-		material.Activity = "traveling to " + travel.DestinationName
+		material.Activity = trimUTF8("traveling to "+travel.DestinationName, chatContextSectionBytes)
 	}
 
-	material.Possessions = joinCapped(possessionsParts(a.latest), chatContextSectionBytes)
-	material.Abilities = joinCapped(abilitiesParts(a.latest), chatContextSectionBytes)
-	material.Quests = joinCapped(questParts(a.latest), chatContextSectionBytes)
-	material.Surroundings = joinCapped(surroundingsParts(a.latest), chatContextSectionBytes)
-	material.ActivityDetail = joinCapped(activityDetailParts(a.state, a.recent), chatContextSectionBytes)
-	material.Social = joinCapped(socialParts(a.latest, a.state), chatContextSectionBytes)
-	material.Economy = joinCapped(economyParts(a.latest, a.state.Task), chatContextSectionBytes)
+	material.Possessions = boundedChatFacts(possessionsParts(a.latest), question)
+	material.Abilities = boundedChatFacts(abilitiesParts(a.latest), question)
+	material.Quests = boundedChatFacts(questParts(a.latest), question)
+	material.Surroundings = boundedChatFacts(surroundingsParts(a.latest), question)
+	details := activityDetailParts(a.state, a.recent)
+	if a.latest.Bot.InFlight {
+		details = append(details, "currently flying")
+	}
+	if a.latest.Bot.InCombat {
+		details = append(details, "currently in combat")
+	}
+	material.ActivityDetail = boundedChatFacts(details, question)
+	material.Social = boundedChatFacts(socialParts(a.latest, a.state), question)
+	economy := append(economyParts(a.latest, a.state.Task), auctionChatParts(a.state, a.latest, time.Now())...)
+	material.Economy = boundedChatFacts(economy, question)
 	return material
 }
 
@@ -215,19 +220,17 @@ func possessionsParts(snapshot snapshot) []string {
 		}
 		return stacks[i].name < stacks[j].name
 	})
-	if len(stacks) > chatContextItemLimit {
-		stacks = stacks[:chatContextItemLimit]
-	}
 	parts := []string{}
 	if len(stacks) > 0 {
-		carried := make([]string, 0, len(stacks))
 		for _, entry := range stacks {
-			carried = append(carried, fmt.Sprintf("%s x%d", entry.name, entry.count))
+			parts = append(parts, fmt.Sprintf("carrying %s x%d", entry.name, entry.count))
 		}
-		parts = append(parts, "carrying "+strings.Join(carried, ", "))
 	}
-	if snapshot.BagSlotsFree > 0 {
-		parts = append(parts, fmt.Sprintf("%d free bag slots", snapshot.BagSlotsFree))
+	if snapshot.InventoryStacksTotal != nil && int(*snapshot.InventoryStacksTotal) > len(snapshot.Inventory.Items) {
+		parts = append([]string{"inventory snapshot partial"}, parts...)
+	}
+	if snapshot.BagSlotsFree != nil {
+		parts = append(parts, fmt.Sprintf("%d free bag slots", *snapshot.BagSlotsFree))
 	}
 	worn := make([]string, 0, len(snapshot.Equipped))
 	for _, item := range snapshot.Equipped {
@@ -238,7 +241,9 @@ func possessionsParts(snapshot snapshot) []string {
 	}
 	sort.Strings(worn)
 	if len(worn) > 0 {
-		parts = append(parts, "wearing "+strings.Join(worn, ", "))
+		for _, name := range worn {
+			parts = append(parts, "wearing "+name)
+		}
 	}
 	return parts
 }
@@ -264,41 +269,54 @@ func abilitiesParts(snapshot snapshot) []string {
 		sort.Strings(ordered)
 		parts = append(parts, "class roles (not verified spec or readiness) "+strings.Join(ordered, "/"))
 	}
-	if len(snapshot.Abilities) > 0 {
-		names := append([]string(nil), snapshot.Abilities...)
+	if snapshot.KnownAbilitiesTotal != nil || len(snapshot.Abilities) > 0 {
+		names := append([]string(nil), snapshot.KnownAbilities...)
+		label := "known spell "
+		if snapshot.KnownAbilitiesTotal == nil {
+			names = append([]string(nil), snapshot.Abilities...)
+			label = "action-bar spell (partial spellbook) "
+		}
 		sort.Strings(names)
-		parts = append(parts, "action-bar spells (partial spellbook) "+strings.Join(names, ", "))
+		for _, name := range names {
+			parts = append(parts, label+name)
+		}
+		if snapshot.KnownAbilitiesTotal != nil && int(*snapshot.KnownAbilitiesTotal) > len(names) {
+			parts = append([]string{"spellbook snapshot partial"}, parts...)
+		}
 	}
 	recipes := make([]string, 0, len(snapshot.CraftingRecipes))
 	for _, recipe := range snapshot.CraftingRecipes {
 		if recipe.Name == "" {
 			continue
 		}
-		recipes = append(recipes, recipe.Name)
+		line := "recipe " + recipe.Name + fmt.Sprintf(" yields %d", recipe.Yield)
+		for _, reagent := range recipe.Reagents {
+			line += fmt.Sprintf(", %s x%d", itemChatName(reagent.ItemID, reagent.Name), reagent.Count)
+		}
+		recipes = append(recipes, line)
 	}
 	sort.Strings(recipes)
-	if len(recipes) > chatContextRecipeLimit {
-		recipes = recipes[:chatContextRecipeLimit]
-	}
 	if len(recipes) > 0 {
-		parts = append(parts, "recipes "+strings.Join(recipes, ", "))
+		parts = append(parts, recipes...)
+	}
+	if page := snapshot.CraftingRecipePage; page != nil && (page.Total > uint32(len(snapshot.CraftingRecipes)) || page.DependenciesTruncated) {
+		parts = append([]string{"recipes snapshot partial"}, parts...)
 	}
 	if len(snapshot.FlightPaths) > 0 {
 		paths := append([]string(nil), snapshot.FlightPaths...)
 		sort.Strings(paths)
-		if len(paths) > chatContextNearbyLimit {
-			paths = paths[:chatContextNearbyLimit]
+		for _, path := range paths {
+			parts = append(parts, "flight path "+path)
 		}
-		parts = append(parts, "flight paths "+strings.Join(paths, ", "))
+	}
+	if snapshot.FlightPathsTotal != nil && int(*snapshot.FlightPathsTotal) > len(snapshot.FlightPaths) {
+		parts = append([]string{"flight-path snapshot partial"}, parts...)
 	}
 	return parts
 }
 
 // questParts summarizes active quests with objective progress.
 func questParts(snapshot snapshot) []string {
-	if len(snapshot.Quests) > chatContextQuestLimit {
-		snapshot.Quests = snapshot.Quests[:chatContextQuestLimit]
-	}
 	parts := []string{}
 	for _, quest := range snapshot.Quests {
 		if quest.Title == "" {
@@ -312,7 +330,14 @@ func questParts(snapshot snapshot) []string {
 			}
 			objectives = " (" + strings.Join(objectiveParts, ", ") + ")"
 		}
-		parts = append(parts, quest.Title+objectives)
+		status := ""
+		if quest.StatusName != "" {
+			status = " [" + quest.StatusName + "]"
+		}
+		parts = append(parts, quest.Title+objectives+status)
+	}
+	for _, quest := range snapshot.AvailableQuests {
+		parts = append(parts, "available quest "+quest.Title+" from "+quest.GiverName)
 	}
 	return parts
 }
@@ -320,45 +345,60 @@ func questParts(snapshot snapshot) []string {
 // surroundingsParts lists who and what is nearby, nearest first.
 func surroundingsParts(snapshot snapshot) []string {
 	parts := []string{}
-	appendNearby := func(entries []string) {
-		if len(entries) > chatContextNearbyLimit {
-			entries = entries[:chatContextNearbyLimit]
-		}
-		parts = append(parts, entries...)
+	if snapshot.Bot.AreaName != "" || snapshot.Bot.ZoneName != "" {
+		parts = append(parts, "location "+snapshot.Bot.AreaName+", "+snapshot.Bot.ZoneName)
 	}
-	npcs := make([]string, 0, len(snapshot.NearbyNPCs))
+	if target := snapshot.TravelTarget; target != nil && target.DestinationName != "" {
+		parts = append(parts, "travel destination "+target.DestinationName)
+	}
+	if snapshot.Hearthstone != "" {
+		parts = append(parts, "hearthstone bound to "+snapshot.Hearthstone)
+	}
+	type nearbyFact struct {
+		distance float64
+		text     string
+	}
+	var nearby []nearbyFact
 	for _, npc := range snapshot.NearbyNPCs {
 		if npc.Name == "" {
 			continue
 		}
-		npcs = append(npcs, fmt.Sprintf("%s (%.0fm)", npc.Name, npc.Distance))
+		label := "NPC "
+		if len(npc.VendorOffers) > 0 {
+			label = "vendor "
+		}
+		nearby = append(nearby, nearbyFact{npc.Distance, fmt.Sprintf("%s%s (%.0fm)", label, npc.Name, npc.Distance)})
 	}
-	sort.Slice(npcs, func(i, j int) bool { return npcs[i] < npcs[j] })
-	appendNearby(npcs)
-	mailboxes := make([]string, 0, len(snapshot.NearbyMailboxes))
 	for _, mailbox := range snapshot.NearbyMailboxes {
-		mailboxes = append(mailboxes, fmt.Sprintf("mailbox %s (%.0fm)", mailbox.Name, mailbox.Distance))
+		nearby = append(nearby, nearbyFact{mailbox.Distance, fmt.Sprintf("mailbox %s (%.0fm)", mailbox.Name, mailbox.Distance)})
 	}
-	sort.Strings(mailboxes)
-	appendNearby(mailboxes)
-	corpses := make([]string, 0, len(snapshot.NearbyCorpses))
 	for _, corpse := range snapshot.NearbyCorpses {
 		if corpse.Name == "" {
 			continue
 		}
-		corpses = append(corpses, fmt.Sprintf("corpse %s (%.0fm)", corpse.Name, corpse.Distance))
+		nearby = append(nearby, nearbyFact{corpse.Distance, fmt.Sprintf("corpse %s (%.0fm)", corpse.Name, corpse.Distance)})
 	}
-	sort.Strings(corpses)
-	appendNearby(corpses)
-	objects := make([]string, 0, len(snapshot.NearbyGameObjects))
 	for _, object := range snapshot.NearbyGameObjects {
 		if object.Name == "" {
 			continue
 		}
-		objects = append(objects, fmt.Sprintf("%s (%.0fm)", object.Name, object.Distance))
+		nearby = append(nearby, nearbyFact{object.Distance, fmt.Sprintf("object %s (%.0fm), gatherable=%t", object.Name, object.Distance, object.CanGather)})
 	}
-	sort.Strings(objects)
-	appendNearby(objects)
+	for _, player := range snapshot.NearbyPlayers {
+		nearby = append(nearby, nearbyFact{player.Distance, fmt.Sprintf("player %s (%.0fm), bot=%t", player.Name, player.Distance, player.IsBot)})
+	}
+	for _, creature := range snapshot.NearbyCreatures {
+		nearby = append(nearby, nearbyFact{creature.Distance, fmt.Sprintf("creature %s (%.0fm)", creature.Name, creature.Distance)})
+	}
+	sort.Slice(nearby, func(i, j int) bool {
+		if nearby[i].distance != nearby[j].distance {
+			return nearby[i].distance < nearby[j].distance
+		}
+		return nearby[i].text < nearby[j].text
+	})
+	for _, fact := range nearby {
+		parts = append(parts, fact.text)
+	}
 	return parts
 }
 
@@ -375,6 +415,9 @@ func activityDetailParts(state persistedAgent, recent []recentEvent) []string {
 			detail += fmt.Sprintf(" (%d/%d)", state.Task.Completed, state.Task.GoalCount)
 		}
 		parts = append(parts, detail)
+		if state.Task.Phase != "" {
+			parts = append(parts, "phase="+state.Task.Phase)
+		}
 	}
 	var results []string
 	for index := len(recent) - 1; index >= 0 && len(results) < chatContextTaskLimit; index-- {
@@ -407,13 +450,18 @@ func activityDetailParts(state persistedAgent, recent []recentEvent) []string {
 // socialParts lists group members and remembered identity details.
 func socialParts(snapshot snapshot, state persistedAgent) []string {
 	parts := []string{}
+	if snapshot.Bot.PendingGroupInvite {
+		parts = append(parts, "pending group invite")
+	}
 	if len(snapshot.Bot.GroupMembers) > 0 {
 		members := make([]string, 0, len(snapshot.Bot.GroupMembers))
 		for _, member := range snapshot.Bot.GroupMembers {
-			members = append(members, fmt.Sprintf("%s lvl%d", member.Name, member.Level))
+			members = append(members, fmt.Sprintf("%s lvl%d bot=%t", member.Name, member.Level, member.IsBot))
 		}
 		sort.Strings(members)
-		parts = append(parts, "group "+strings.Join(members, ", "))
+		for _, member := range members {
+			parts = append(parts, "group member "+member)
+		}
 	}
 	for index, memory := range state.Memories {
 		if index >= chatContextMemoryLimit {
@@ -427,6 +475,9 @@ func socialParts(snapshot snapshot, state persistedAgent) []string {
 		if reputation.Faction != "" {
 			parts = append(parts, fmt.Sprintf("reputation %s: %d", reputation.Faction, reputation.Standing))
 		}
+	}
+	if snapshot.ReputationsTotal != nil && int(*snapshot.ReputationsTotal) > len(snapshot.Reputations) {
+		parts = append([]string{"reputation snapshot partial"}, parts...)
 	}
 	return parts
 }
@@ -445,9 +496,6 @@ func economyParts(snapshot snapshot, currentTask *task) []string {
 	vendors := make([]string, 0, chatContextVendorLimit)
 	for _, npc := range snapshot.NearbyNPCs {
 		for _, offer := range npc.VendorOffers {
-			if len(vendors) >= chatContextVendorLimit {
-				break
-			}
 			vendors = append(vendors, fmt.Sprintf("%s sells %s x%d for %d copper",
 				npc.Name, offer.Name, offer.BundleCount, offer.PriceCopper))
 		}
@@ -461,9 +509,6 @@ func economyParts(snapshot snapshot, currentTask *task) []string {
 	if len(materialGoals) > 0 {
 		needs := make([]string, 0, chatContextMaterialLimit)
 		for _, goal := range materialGoals {
-			if len(needs) >= chatContextMaterialLimit {
-				break
-			}
 			name, has := itemNames[goal.ItemID]
 			if !has {
 				name = fmt.Sprintf("item %d (name unknown)", goal.ItemID)
@@ -474,8 +519,14 @@ func economyParts(snapshot snapshot, currentTask *task) []string {
 			parts = append(parts, "needs "+strings.Join(needs, ", "))
 		}
 	}
-	if snapshot.MailCount > 0 {
-		parts = append(parts, fmt.Sprintf("%d letters waiting", snapshot.MailCount))
+	if snapshot.MailCount != nil {
+		parts = append(parts, fmt.Sprintf("%d letters waiting", *snapshot.MailCount))
+	}
+	if snapshot.UnreadMailCount != nil {
+		parts = append(parts, fmt.Sprintf("%d unread letters", *snapshot.UnreadMailCount))
+	}
+	if snapshot.KnownAbilitiesTotal != nil && snapshot.MailCount == nil {
+		parts = append(parts, "mail counts unavailable (service-owned or unknown)")
 	}
 	if snapshot.Hearthstone != "" {
 		parts = append(parts, "hearthstone bound to "+snapshot.Hearthstone)
@@ -594,7 +645,7 @@ func (a *actor) buildChatJob(incoming event) (chatJob, bool) {
 		groupSize:      a.latest.Bot.GroupSize,
 		profile:        profile,
 		jitter:         a.owner.cfg.chatJitter,
-		context:        a.buildChatContext(),
+		context:        a.buildChatContext(chats[len(chats)-1].Message),
 	}, true
 }
 
@@ -804,17 +855,17 @@ func chatContextGroupLabel(group string) string {
 	case "possessions":
 		return "carried and worn items"
 	case "abilities":
-		return "professions, recipes and usable abilities"
+		return "professions, recipe yields/reagents, known spells and flight paths"
 	case "quests":
 		return "active quests and their progress"
 	case "surroundings":
-		return "nearby people, vendors, mailboxes and objects"
+		return "location, destination, hearthstone and nearby people, vendors, mailboxes and objects"
 	case "activity_detail":
 		return "current task progress and recent task outcomes"
 	case "social":
-		return "group members and remembered people"
+		return "group members, remembered people and faction reputations"
 	case "economy":
-		return "vendor prices, material needs and mail"
+		return "vendor prices, observed auction offers, pending bids, material needs and mail"
 	default:
 		return group
 	}

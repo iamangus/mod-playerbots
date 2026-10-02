@@ -170,7 +170,10 @@ func (client *modelClient) composeChat(slots chan struct{}, profile string, requ
 		"Stay family-friendly and in character. Match the language of the recent chat. At most 200 characters. " +
 		"The money, character and current_task fields are facts this character knows; the context object holds only " +
 		"groups the character chose to consult. Never contradict or invent beyond these facts; if asked something the " +
-		"facts do not cover, answer honestly instead of making numbers up. Profile: " + profile
+		"facts do not cover, answer honestly instead of making numbers up. Lists are bounded observations, not exhaustive: " +
+		"absence never proves you lack an item, recipe or spell. Partial/unknown facts require an honest uncertainty. " +
+		"Known spells do not prove current mana, range, cooldown or spec readiness; auction prices are observations, " +
+		"not market values. Crafting or trading answers do not execute gameplay work. Profile: " + profile
 	observation, err := json.Marshal(map[string]any{
 		"bot_name": request.BotName, "intent": request.Intent, "channel": request.Channel,
 		"audience": request.Audience, "group_size": request.GroupSize, "recent_chat": request.Chats,
